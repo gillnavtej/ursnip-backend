@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::collaborators::access;
 use crate::errors::AppError;
+use crate::middleware::workspace_context::WorkspaceRole;
 use crate::models::common::{SubscriptionStatus, Tier};
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
@@ -11,8 +13,17 @@ use crate::models::common::{SubscriptionStatus, Tier};
 /// Maximum number of snippets allowed on the free tier.
 const FREE_TIER_MAX_SNIPPETS: i64 = 10;
 
+/// Maximum number of snippets allowed on the pro tier.
+const PRO_TIER_MAX_SNIPPETS: i64 = 100;
+
+/// Maximum number of snippets allowed on the teams tier.
+const TEAMS_TIER_MAX_SNIPPETS: i64 = 100;
+
 /// Maximum content length (in characters) allowed on the free tier.
-const FREE_TIER_MAX_CONTENT_CHARS: usize = 2000;
+const FREE_TIER_MAX_CONTENT_CHARS: usize = 10000;
+
+/// Maximum content length (in characters) allowed on pro/teams tiers.
+const PRO_TIER_MAX_CONTENT_CHARS: usize = 30000;
 
 /// Default limit for delta polling pagination.
 const DELTA_DEFAULT_LIMIT: i64 = 500;
@@ -25,6 +36,12 @@ const DELTA_RETENTION_DAYS: i64 = 30;
 
 /// Maximum number of folders allowed on the free tier.
 const FREE_TIER_MAX_FOLDERS: i64 = 3;
+
+/// Maximum number of folders allowed on the pro tier.
+const PRO_TIER_MAX_FOLDERS: i64 = 15;
+
+/// Maximum number of folders allowed on the teams tier.
+const TEAMS_TIER_MAX_FOLDERS: i64 = 25;
 
 /// Maximum number of items allowed in a single batch operation.
 const MAX_BATCH_SIZE: usize = 100;
@@ -39,6 +56,7 @@ pub struct CreateSnippetPayload {
     pub content: String,
     pub snippet_type: String,
     pub folder_id: Option<Uuid>,
+    pub ai_prompt: Option<String>,
 }
 
 /// Payload for updating an existing snippet.
@@ -47,6 +65,10 @@ pub struct UpdateSnippetPayload {
     pub trigger: Option<String>,
     pub content: Option<String>,
     pub snippet_type: Option<String>,
+    pub folder_id: Option<String>,
+    pub is_enabled: Option<bool>,
+    pub is_pinned: Option<bool>,
+    pub ai_prompt: Option<String>,
 }
 
 // ─── Response DTOs ──────────────────────────────────────────────────────────────
@@ -60,6 +82,11 @@ pub struct SnippetResponse {
     pub trigger: String,
     pub content: String,
     pub snippet_type: String,
+    pub ai_prompt: Option<String>,
+    pub folder_id: Option<Uuid>,
+    pub is_enabled: bool,
+    pub is_pinned: bool,
+    pub usage_count: i64,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -173,6 +200,30 @@ struct SnippetRow {
     pub trigger: String,
     pub content: String,
     pub snippet_type: String,
+    pub ai_prompt: Option<String>,
+    pub folder_id: Option<Uuid>,
+    pub is_enabled: bool,
+    pub is_pinned: bool,
+    pub usage_count: i64,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// Snippet row without folder_id — used for INSERT/UPDATE RETURNING queries
+/// that don't JOIN snippet_folders.
+#[derive(Debug, sqlx::FromRow)]
+struct SnippetRowBasic {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub created_by: Uuid,
+    pub trigger: String,
+    pub content: String,
+    pub snippet_type: String,
+    pub ai_prompt: Option<String>,
+    pub is_enabled: bool,
+    pub is_pinned: bool,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -222,6 +273,91 @@ impl SyncService {
         Self { pool }
     }
 
+    // ─── Collaborator access enforcement ────────────────────────────────────
+    //
+    // These hooks enforce account-level collaborator access on top of the
+    // existing workspace-membership checks. The owner-bypass short-circuit in
+    // `access::effective_access` keeps the common solo-owner path fast and
+    // behavior-identical (a single owner_id lookup).
+
+    /// True if `user_id` is the workspace owner OR a `workspace_members` row.
+    /// These callers use the existing role-based rules and are exempt from the
+    /// collaborator fine-grained tightening.
+    async fn is_owner_or_member(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<bool, AppError> {
+        let yes: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1 AND owner_id = $2)
+                OR EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2)
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+        Ok(yes)
+    }
+
+    /// For account-level collaborators (callers who are neither the owner nor a
+    /// `workspace_members` row), require effective Edit on the specific target
+    /// resolved most-specific-first (snippet > folder(s) > workspace). Owners and
+    /// team members are exempt and keep their existing role-based behavior.
+    ///
+    /// This only ever tightens access: a caller who is owner/member returns Ok
+    /// without additional restriction.
+    async fn enforce_collaborator_write(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+        folder_ids: &[Uuid],
+        snippet_id: Option<Uuid>,
+    ) -> Result<(), AppError> {
+        if self.is_owner_or_member(user_id, workspace_id).await? {
+            return Ok(());
+        }
+        let effective =
+            access::effective_access(&self.pool, user_id, workspace_id, folder_ids, snippet_id)
+                .await?;
+        match effective {
+            Some(level) if level.can_write() => Ok(()),
+            _ => Err(AppError::ResourceAccessDenied),
+        }
+    }
+
+    /// Deletes may only be performed by the workspace owner. Account-level
+    /// collaborators are rejected even with Edit; team members retain their
+    /// existing role-based delete rules, so this only applies the owner-only
+    /// rule to non-member collaborators.
+    async fn enforce_delete_permission(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<(), AppError> {
+        // Owner: always allowed.
+        if access::is_workspace_owner(&self.pool, user_id, workspace_id).await? {
+            return Ok(());
+        }
+        // Existing workspace member: defer to the existing role-based rules
+        // (checked by the caller via `check_entity_ownership`).
+        let is_member: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2)",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+        if is_member {
+            return Ok(());
+        }
+        // Account-level collaborator: deletes are owner-only.
+        Err(AppError::ResourceAccessDenied)
+    }
+
     /// Assign the next workspace-scoped version within a transaction.
     ///
     /// Uses an advisory lock on the workspace to atomically determine the next
@@ -248,6 +384,28 @@ impl SyncService {
         .map_err(|_| AppError::InternalError)?;
 
         Ok(max_version + 1)
+    }
+
+    /// Check entity ownership based on workspace role.
+    ///
+    /// - ADMIN+: can modify any entity regardless of creator
+    /// - EDITOR: can only modify entities they created
+    /// - VIEWER/Member: always denied (should not reach here due to handler role check)
+    fn check_entity_ownership(
+        user_id: Uuid,
+        entity_created_by: Uuid,
+        role: WorkspaceRole,
+    ) -> Result<(), AppError> {
+        if role >= WorkspaceRole::Admin {
+            return Ok(());
+        }
+        if role >= WorkspaceRole::Editor {
+            if entity_created_by == user_id {
+                return Ok(());
+            }
+            return Err(AppError::Forbidden);
+        }
+        Err(AppError::Forbidden)
     }
 
     /// Verify that a user is a member of a workspace.
@@ -322,11 +480,11 @@ impl SyncService {
         Ok((tier, status))
     }
 
-    /// Enforce free-tier snippet limits.
+    /// Enforce per-tier snippet limits.
     ///
     /// Checks:
-    /// - Snippet count limit (10 for free tier)
-    /// - Content length limit (2000 chars for free tier)
+    /// - Snippet count limit (10 Free, 100 Pro/Teams)
+    /// - Content length limit (10000 Free, 30000 Pro/Teams)
     /// - Soft-lock: if subscription is cancelled/deactivated and would exceed free limits
     async fn enforce_snippet_limits(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -336,10 +494,15 @@ impl SyncService {
         content: &str,
         is_create: bool,
     ) -> Result<(), AppError> {
-        // Pro and Teams tiers have no limits
-        if *tier == Tier::Pro || *tier == Tier::Teams {
-            return Ok(());
-        }
+        // Determine limits based on tier
+        let max_snippets = match tier {
+            Tier::Free => FREE_TIER_MAX_SNIPPETS,
+            Tier::Pro | Tier::Teams => PRO_TIER_MAX_SNIPPETS,
+        };
+        let max_content_chars = match tier {
+            Tier::Free => FREE_TIER_MAX_CONTENT_CHARS,
+            Tier::Pro | Tier::Teams => PRO_TIER_MAX_CONTENT_CHARS,
+        };
 
         // Check for soft-lock: subscription cancelled/deactivated means content is read-only
         // if it would exceed free limits
@@ -347,7 +510,7 @@ impl SyncService {
             *status == SubscriptionStatus::Cancelled || *status == SubscriptionStatus::Deactivated;
 
         // Enforce content length limit
-        if content.len() > FREE_TIER_MAX_CONTENT_CHARS {
+        if content.len() > max_content_chars {
             if is_soft_locked {
                 return Err(AppError::ContentSoftLocked);
             }
@@ -364,7 +527,7 @@ impl SyncService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-            if snippet_count >= FREE_TIER_MAX_SNIPPETS {
+            if snippet_count >= max_snippets {
                 if is_soft_locked {
                     return Err(AppError::ContentSoftLocked);
                 }
@@ -469,10 +632,12 @@ impl SyncService {
         status: &SubscriptionStatus,
         is_create: bool,
     ) -> Result<(), AppError> {
-        // Pro and Teams tiers have no limits
-        if *tier == Tier::Pro || *tier == Tier::Teams {
-            return Ok(());
-        }
+        // Determine limit based on tier
+        let max_folders = match tier {
+            Tier::Free => FREE_TIER_MAX_FOLDERS,
+            Tier::Pro => PRO_TIER_MAX_FOLDERS,
+            Tier::Teams => TEAMS_TIER_MAX_FOLDERS,
+        };
 
         // Check for soft-lock: subscription cancelled/deactivated means content is read-only
         let is_soft_locked =
@@ -488,7 +653,7 @@ impl SyncService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-            if folder_count >= FREE_TIER_MAX_FOLDERS {
+            if folder_count >= max_folders {
                 if is_soft_locked {
                     return Err(AppError::ContentSoftLocked);
                 }
@@ -506,7 +671,7 @@ impl SyncService {
 
     /// Create a new snippet.
     ///
-    /// Validates payload, enforces tier limits (free: 10 snippets, 2000 chars),
+    /// Validates payload, enforces tier limits (free: 10 snippets, 10000 chars),
     /// enforces trigger uniqueness per workspace, assigns version, persists, and records delta.
     ///
     /// Requirements: 2.1, 2.4, 2.5, 2.32, 2.33, 5.21
@@ -521,8 +686,15 @@ impl SyncService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-        // Verify membership
-        Self::verify_membership(&mut tx, payload.workspace_id, user_id).await?;
+        // Membership is verified by workspace_context_guard middleware, and the
+        // handler enforces coarse create permission via the workspace role.
+        // Collaborator fine-grained enforcement: if the caller is an account
+        // collaborator (not the owner, not a workspace member), require Edit
+        // resolved most-specific-first on the target workspace/folder. Owners and
+        // team members are unaffected (this only tightens, never loosens).
+        let create_folder_ids: Vec<Uuid> = payload.folder_id.into_iter().collect();
+        self.enforce_collaborator_write(user_id, payload.workspace_id, &create_folder_ids, None)
+            .await?;
 
         // Load subscription and check tier/status
         let (tier, status) = Self::load_subscription(&mut tx, payload.workspace_id).await?;
@@ -546,11 +718,11 @@ impl SyncService {
         let version = Self::assign_next_version(&mut tx, payload.workspace_id).await?;
 
         // Persist snippet
-        let row = sqlx::query_as::<_, SnippetRow>(
+        let row = sqlx::query_as::<_, SnippetRowBasic>(
             r#"
-            INSERT INTO snippets (workspace_id, created_by, trigger, content, snippet_type, version)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+            INSERT INTO snippets (workspace_id, created_by, trigger, content, snippet_type, ai_prompt, version)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
             "#,
         )
         .bind(payload.workspace_id)
@@ -558,6 +730,7 @@ impl SyncService {
         .bind(&payload.trigger)
         .bind(&payload.content)
         .bind(&payload.snippet_type)
+        .bind(&payload.ai_prompt)
         .bind(version)
         .fetch_one(&mut *tx)
         .await
@@ -571,6 +744,7 @@ impl SyncService {
             "trigger": row.trigger,
             "content": row.content,
             "snippet_type": row.snippet_type,
+            "is_enabled": row.is_enabled,
             "version": row.version,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
@@ -609,6 +783,11 @@ impl SyncService {
             trigger: row.trigger,
             content: row.content,
             snippet_type: row.snippet_type,
+            ai_prompt: row.ai_prompt,
+            folder_id: payload.folder_id,
+            is_enabled: row.is_enabled,
+            is_pinned: row.is_pinned,
+            usage_count: 0,
             version: row.version,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -626,6 +805,7 @@ impl SyncService {
         user_id: Uuid,
         snippet_id: Uuid,
         payload: UpdateSnippetPayload,
+        role: WorkspaceRole,
     ) -> Result<SnippetResponse, AppError> {
         let mut tx = self
             .pool
@@ -634,9 +814,9 @@ impl SyncService {
             .map_err(|_| AppError::InternalError)?;
 
         // Fetch existing snippet
-        let existing = sqlx::query_as::<_, SnippetRow>(
+        let existing = sqlx::query_as::<_, SnippetRowBasic>(
             r#"
-            SELECT id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+            SELECT id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
             FROM snippets
             WHERE id = $1 AND deleted_at IS NULL
             "#,
@@ -648,8 +828,27 @@ impl SyncService {
 
         let existing = existing.ok_or(AppError::WorkspaceNotFound)?;
 
-        // Verify membership
-        Self::verify_membership(&mut tx, existing.workspace_id, user_id).await?;
+        // Collaborator fine-grained enforcement: an account-level collaborator
+        // (non-owner, non-member) must have effective Edit on this specific
+        // snippet, resolved via snippet -> its folders -> workspace. Owners and
+        // team members skip this and keep the role-based ownership rule below.
+        let snippet_folder_ids = access::folders_of_snippet(&self.pool, snippet_id).await?;
+        self.enforce_collaborator_write(
+            user_id,
+            existing.workspace_id,
+            &snippet_folder_ids,
+            Some(snippet_id),
+        )
+        .await?;
+
+        // Membership is verified by workspace_context_guard middleware.
+        // Enforce ownership for team members: EDITOR can only update own
+        // snippets, ADMIN+ any. (For collaborators admitted with an Editor role,
+        // created_by is the owner, so this passes once collaborator Edit above
+        // succeeded.)
+        if self.is_owner_or_member(user_id, existing.workspace_id).await? {
+            Self::check_entity_ownership(user_id, existing.created_by, role)?;
+        }
 
         // Load subscription for tier/status checks
         let (tier, status) = Self::load_subscription(&mut tx, existing.workspace_id).await?;
@@ -689,23 +888,31 @@ impl SyncService {
             .snippet_type
             .as_deref()
             .unwrap_or(&existing.snippet_type);
+        let final_ai_prompt = if payload.ai_prompt.is_some() {
+            payload.ai_prompt.as_deref()
+        } else {
+            existing.ai_prompt.as_deref()
+        };
 
-        let row = sqlx::query_as::<_, SnippetRow>(
+        let row = sqlx::query_as::<_, SnippetRowBasic>(
             r#"
             UPDATE snippets
-            SET trigger = $1, content = $2, snippet_type = $3, version = $4, updated_at = now()
-            WHERE id = $5
-            RETURNING id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+            SET trigger = $1, content = $2, snippet_type = $3, ai_prompt = $4, is_enabled = $5, is_pinned = $6, version = $7, updated_at = now()
+            WHERE id = $8
+            RETURNING id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
             "#,
         )
         .bind(final_trigger)
         .bind(final_content)
         .bind(final_snippet_type)
+        .bind(final_ai_prompt)
+        .bind(payload.is_enabled.unwrap_or(existing.is_enabled))
+        .bind(payload.is_pinned.unwrap_or(existing.is_pinned))
         .bind(version)
         .bind(snippet_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|_| AppError::InternalError)?;
+        .map_err(|e| { eprintln!("[UPDATE SNIPPET ERROR] {e:?}"); AppError::InternalError })?;
 
         // Build delta payload
         let delta_payload = serde_json::json!({
@@ -715,6 +922,7 @@ impl SyncService {
             "trigger": row.trigger,
             "content": row.content,
             "snippet_type": row.snippet_type,
+            "is_enabled": row.is_enabled,
             "version": row.version,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
@@ -732,7 +940,41 @@ impl SyncService {
         )
         .await?;
 
+        // Update folder assignment if folder_id is provided
+        if let Some(ref folder_id_str) = payload.folder_id {
+            // Remove existing folder assignment
+            sqlx::query("DELETE FROM snippet_folders WHERE snippet_id = $1")
+                .bind(snippet_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::InternalError)?;
+
+            // If not "none", insert new assignment
+            if folder_id_str != "none" {
+                if let Ok(fid) = Uuid::parse_str(folder_id_str) {
+                    sqlx::query(
+                        "INSERT INTO snippet_folders (snippet_id, folder_id) VALUES ($1, $2)",
+                    )
+                    .bind(snippet_id)
+                    .bind(fid)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::InternalError)?;
+                }
+            }
+        }
+
         tx.commit().await.map_err(|_| AppError::InternalError)?;
+
+        // Query the current folder_id for the response
+        let current_folder_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT folder_id FROM snippet_folders WHERE snippet_id = $1 LIMIT 1",
+        )
+        .bind(snippet_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?
+        .flatten();
 
         Ok(SnippetResponse {
             id: row.id,
@@ -741,6 +983,11 @@ impl SyncService {
             trigger: row.trigger,
             content: row.content,
             snippet_type: row.snippet_type,
+            ai_prompt: row.ai_prompt,
+            folder_id: current_folder_id,
+            is_enabled: row.is_enabled,
+            is_pinned: row.is_pinned,
+            usage_count: 0,
             version: row.version,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -757,6 +1004,7 @@ impl SyncService {
         &self,
         user_id: Uuid,
         snippet_id: Uuid,
+        role: WorkspaceRole,
     ) -> Result<(), AppError> {
         let mut tx = self
             .pool
@@ -765,9 +1013,9 @@ impl SyncService {
             .map_err(|_| AppError::InternalError)?;
 
         // Fetch existing snippet
-        let existing = sqlx::query_as::<_, SnippetRow>(
+        let existing = sqlx::query_as::<_, SnippetRowBasic>(
             r#"
-            SELECT id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+            SELECT id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
             FROM snippets
             WHERE id = $1 AND deleted_at IS NULL
             "#,
@@ -779,8 +1027,16 @@ impl SyncService {
 
         let existing = existing.ok_or(AppError::WorkspaceNotFound)?;
 
-        // Verify membership
-        Self::verify_membership(&mut tx, existing.workspace_id, user_id).await?;
+        // Deletes are owner-only for account-level collaborators (even with Edit).
+        // Owners and team members proceed to the existing role-based rule.
+        self.enforce_delete_permission(user_id, existing.workspace_id)
+            .await?;
+
+        // Membership is verified by workspace_context_guard middleware.
+        // Enforce ownership: EDITOR can only delete own snippets, ADMIN+ can delete any.
+        if self.is_owner_or_member(user_id, existing.workspace_id).await? {
+            Self::check_entity_ownership(user_id, existing.created_by, role)?;
+        }
 
         // Assign next version
         let version = Self::assign_next_version(&mut tx, existing.workspace_id).await?;
@@ -815,6 +1071,16 @@ impl SyncService {
         )
         .await?;
 
+        // Remove any collaborator access grants targeting this snippet so no
+        // dangling grants remain (Req 8.1).
+        sqlx::query(
+            "DELETE FROM access_grants WHERE resource_type = 'snippet' AND resource_id = $1",
+        )
+        .bind(snippet_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
         tx.commit().await.map_err(|_| AppError::InternalError)?;
 
         Ok(())
@@ -839,8 +1105,12 @@ impl SyncService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-        // Verify membership
-        Self::verify_membership(&mut tx, payload.workspace_id, user_id).await?;
+        // Membership is verified by workspace_context_guard middleware.
+        // Collaborator fine-grained enforcement: creating a folder requires Edit
+        // on the workspace (a folder-level grant cannot authorize creating a new
+        // sibling folder). Owners/members are exempt.
+        self.enforce_collaborator_write(user_id, payload.workspace_id, &[], None)
+            .await?;
 
         // Load subscription and check tier/status
         let (tier, status) = Self::load_subscription(&mut tx, payload.workspace_id).await?;
@@ -914,6 +1184,7 @@ impl SyncService {
         user_id: Uuid,
         folder_id: Uuid,
         payload: UpdateFolderPayload,
+        role: WorkspaceRole,
     ) -> Result<FolderResponse, AppError> {
         let mut tx = self
             .pool
@@ -936,8 +1207,18 @@ impl SyncService {
 
         let existing = existing.ok_or(AppError::WorkspaceNotFound)?;
 
-        // Verify membership
-        Self::verify_membership(&mut tx, existing.workspace_id, user_id).await?;
+        // Collaborator fine-grained enforcement: updating a folder requires
+        // effective Edit on that folder (folder grant > workspace grant).
+        self.enforce_collaborator_write(user_id, existing.workspace_id, &[folder_id], None)
+            .await?;
+
+        // Membership is verified by workspace_context_guard middleware.
+        // Enforce ownership for team members: EDITOR can only update own folders,
+        // ADMIN+ any. Collaborators admitted with an Editor role already passed
+        // the fine-grained check above.
+        if self.is_owner_or_member(user_id, existing.workspace_id).await? {
+            Self::check_entity_ownership(user_id, existing.created_by, role)?;
+        }
 
         // Load subscription for soft-lock check
         let (tier, status) = Self::load_subscription(&mut tx, existing.workspace_id).await?;
@@ -1012,6 +1293,7 @@ impl SyncService {
         &self,
         user_id: Uuid,
         folder_id: Uuid,
+        role: WorkspaceRole,
     ) -> Result<(), AppError> {
         let mut tx = self
             .pool
@@ -1034,8 +1316,15 @@ impl SyncService {
 
         let existing = existing.ok_or(AppError::WorkspaceNotFound)?;
 
-        // Verify membership
-        Self::verify_membership(&mut tx, existing.workspace_id, user_id).await?;
+        // Deletes are owner-only for account-level collaborators (even with Edit).
+        self.enforce_delete_permission(user_id, existing.workspace_id)
+            .await?;
+
+        // Membership is verified by workspace_context_guard middleware.
+        // Enforce ownership: EDITOR can only delete own folders, ADMIN+ can delete any.
+        if self.is_owner_or_member(user_id, existing.workspace_id).await? {
+            Self::check_entity_ownership(user_id, existing.created_by, role)?;
+        }
 
         // Assign next version
         let version = Self::assign_next_version(&mut tx, existing.workspace_id).await?;
@@ -1049,6 +1338,13 @@ impl SyncService {
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::InternalError)?;
+
+        // Unlink all snippets from this folder (move them to root)
+        sqlx::query("DELETE FROM snippet_folders WHERE folder_id = $1")
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
 
         // Build delta payload
         let delta_payload = serde_json::json!({
@@ -1069,6 +1365,16 @@ impl SyncService {
             version,
         )
         .await?;
+
+        // Remove any collaborator access grants targeting this folder so no
+        // dangling grants remain (Req 8.1).
+        sqlx::query(
+            "DELETE FROM access_grants WHERE resource_type = 'folder' AND resource_id = $1",
+        )
+        .bind(folder_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
 
         tx.commit().await.map_err(|_| AppError::InternalError)?;
 
@@ -1100,11 +1406,15 @@ impl SyncService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-        // Verify membership once
-        Self::verify_membership(&mut tx, payload.workspace_id, user_id).await?;
+        // Membership is verified by workspace_context_guard middleware.
 
         // Load subscription once
         let (tier, status) = Self::load_subscription(&mut tx, payload.workspace_id).await?;
+
+        // Batch operations require Pro or Teams tier
+        if tier == Tier::Free {
+            return Err(AppError::SubscriptionRequired);
+        }
 
         let mut results: Vec<BatchItemResult> = Vec::with_capacity(payload.operations.len());
         let mut last_version: i64 = 0;
@@ -1137,11 +1447,11 @@ impl SyncService {
                         Self::assign_next_version(&mut tx, payload.workspace_id).await?;
 
                     // Persist snippet
-                    let row = sqlx::query_as::<_, SnippetRow>(
+                    let row = sqlx::query_as::<_, SnippetRowBasic>(
                         r#"
                         INSERT INTO snippets (workspace_id, created_by, trigger, content, snippet_type, version)
                         VALUES ($1, $2, $3, $4, $5, $6)
-                        RETURNING id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+                        RETURNING id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
                         "#,
                     )
                     .bind(payload.workspace_id)
@@ -1200,6 +1510,11 @@ impl SyncService {
                             trigger: row.trigger,
                             content: row.content,
                             snippet_type: row.snippet_type,
+                            ai_prompt: row.ai_prompt,
+                            folder_id: None,
+                            is_enabled: row.is_enabled,
+                            is_pinned: row.is_pinned,
+                            usage_count: 0,
                             version: row.version,
                             created_at: row.created_at,
                             updated_at: row.updated_at,
@@ -1210,9 +1525,9 @@ impl SyncService {
                 }
                 BatchOperation::UpdateSnippet { id, payload: update_payload } => {
                     // Fetch existing snippet
-                    let existing = sqlx::query_as::<_, SnippetRow>(
+                    let existing = sqlx::query_as::<_, SnippetRowBasic>(
                         r#"
-                        SELECT id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+                        SELECT id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
                         FROM snippets
                         WHERE id = $1 AND deleted_at IS NULL AND workspace_id = $2
                         "#,
@@ -1265,12 +1580,12 @@ impl SyncService {
                         .as_deref()
                         .unwrap_or(&existing.snippet_type);
 
-                    let row = sqlx::query_as::<_, SnippetRow>(
+                    let row = sqlx::query_as::<_, SnippetRowBasic>(
                         r#"
                         UPDATE snippets
                         SET trigger = $1, content = $2, snippet_type = $3, version = $4, updated_at = now()
                         WHERE id = $5
-                        RETURNING id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+                        RETURNING id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
                         "#,
                     )
                     .bind(final_trigger)
@@ -1316,6 +1631,11 @@ impl SyncService {
                             trigger: row.trigger,
                             content: row.content,
                             snippet_type: row.snippet_type,
+                            ai_prompt: row.ai_prompt,
+                            folder_id: None,
+                            is_enabled: row.is_enabled,
+                            is_pinned: row.is_pinned,
+                            usage_count: 0,
                             version: row.version,
                             created_at: row.created_at,
                             updated_at: row.updated_at,
@@ -1326,9 +1646,9 @@ impl SyncService {
                 }
                 BatchOperation::DeleteSnippet { id } => {
                     // Fetch existing snippet
-                    let existing = sqlx::query_as::<_, SnippetRow>(
+                    let existing = sqlx::query_as::<_, SnippetRowBasic>(
                         r#"
-                        SELECT id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
+                        SELECT id, workspace_id, created_by, trigger, content, snippet_type, ai_prompt, is_enabled, is_pinned, version, created_at, updated_at, deleted_at
                         FROM snippets
                         WHERE id = $1 AND deleted_at IS NULL AND workspace_id = $2
                         "#,
@@ -1438,8 +1758,7 @@ impl SyncService {
         user_id: Uuid,
         workspace_id: Uuid,
     ) -> Result<SnapshotResponse, AppError> {
-        // Verify membership
-        self.verify_membership_readonly(workspace_id, user_id).await?;
+        // Membership is verified by workspace_context_guard middleware.
 
         // Get latest workspace version
         let version: i64 = sqlx::query_scalar(
@@ -1453,10 +1772,14 @@ impl SyncService {
         // Fetch all active snippets
         let snippet_rows = sqlx::query_as::<_, SnippetRow>(
             r#"
-            SELECT id, workspace_id, created_by, trigger, content, snippet_type, version, created_at, updated_at, deleted_at
-            FROM snippets
-            WHERE workspace_id = $1 AND deleted_at IS NULL
-            ORDER BY created_at ASC
+            SELECT s.id, s.workspace_id, s.created_by, s.trigger, s.content, s.snippet_type,
+                   s.ai_prompt, sf.folder_id, s.is_enabled, s.is_pinned,
+                   COALESCE((SELECT COUNT(*) FROM snippet_usages su WHERE su.snippet_id = s.id), 0) AS usage_count,
+                   s.version, s.created_at, s.updated_at, s.deleted_at
+            FROM snippets s
+            LEFT JOIN snippet_folders sf ON sf.snippet_id = s.id
+            WHERE s.workspace_id = $1
+            ORDER BY s.created_at ASC
             "#,
         )
         .bind(workspace_id)
@@ -1469,7 +1792,7 @@ impl SyncService {
             r#"
             SELECT id, workspace_id, name, created_by, version, created_at, updated_at, deleted_at
             FROM folders
-            WHERE workspace_id = $1 AND deleted_at IS NULL
+            WHERE workspace_id = $1
             ORDER BY created_at ASC
             "#,
         )
@@ -1488,6 +1811,11 @@ impl SyncService {
                 trigger: r.trigger,
                 content: r.content,
                 snippet_type: r.snippet_type,
+                ai_prompt: r.ai_prompt,
+                folder_id: r.folder_id,
+                is_enabled: r.is_enabled,
+                is_pinned: r.is_pinned,
+                usage_count: r.usage_count,
                 version: r.version,
                 created_at: r.created_at,
                 updated_at: r.updated_at,
@@ -1509,12 +1837,94 @@ impl SyncService {
             })
             .collect();
 
+        // Read isolation for account-level collaborators: an owner or team
+        // member sees the full snapshot; a collaborator (non-owner, non-member)
+        // sees only the folders and snippets they have effective view+ on.
+        let (snippets, folders) = self
+            .filter_snapshot_for_viewer(user_id, workspace_id, snippets, folders)
+            .await?;
+
         Ok(SnapshotResponse {
             workspace_id,
             version,
             snippets,
             folders,
         })
+    }
+
+    /// Filter a workspace snapshot to what `user_id` may view. Owners and team
+    /// members are returned the snapshot unchanged. Account-level collaborators
+    /// receive only:
+    /// - folders they have a folder/workspace view+ grant on,
+    /// - snippets they have a snippet grant on, or that live in a viewable
+    ///   folder, or (with a workspace grant) all snippets.
+    ///
+    /// A workspace-level grant makes the entire workspace viewable.
+    async fn filter_snapshot_for_viewer(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+        snippets: Vec<SnippetResponse>,
+        folders: Vec<FolderResponse>,
+    ) -> Result<(Vec<SnippetResponse>, Vec<FolderResponse>), AppError> {
+        // Owners and team members: unchanged.
+        if self.is_owner_or_member(user_id, workspace_id).await? {
+            return Ok((snippets, folders));
+        }
+
+        // Non-collaborators reaching here would already have been rejected by the
+        // workspace guard; resolve grants defensively regardless.
+        let workspace_view =
+            access::effective_access(&self.pool, user_id, workspace_id, &[], None)
+                .await?
+                .is_some();
+        if workspace_view {
+            return Ok((snippets, folders));
+        }
+
+        // Collect the folder ids the collaborator can view directly.
+        let mut viewable_folder_ids = std::collections::HashSet::new();
+        for f in &folders {
+            if access::effective_access(&self.pool, user_id, workspace_id, &[f.id], None)
+                .await?
+                .is_some()
+            {
+                viewable_folder_ids.insert(f.id);
+            }
+        }
+
+        // Snippets: viewable if in a viewable folder, or granted directly.
+        let mut kept_snippets = Vec::new();
+        for s in snippets {
+            let in_viewable_folder = s
+                .folder_id
+                .map(|fid| viewable_folder_ids.contains(&fid))
+                .unwrap_or(false);
+            let visible = if in_viewable_folder {
+                true
+            } else {
+                let folder_ids = access::folders_of_snippet(&self.pool, s.id).await?;
+                access::effective_access(
+                    &self.pool,
+                    user_id,
+                    workspace_id,
+                    &folder_ids,
+                    Some(s.id),
+                )
+                .await?
+                .is_some()
+            };
+            if visible {
+                kept_snippets.push(s);
+            }
+        }
+
+        let kept_folders = folders
+            .into_iter()
+            .filter(|f| viewable_folder_ids.contains(&f.id))
+            .collect();
+
+        Ok((kept_snippets, kept_folders))
     }
 
     /// Return deltas for a workspace since a given version, with pagination.
@@ -1538,8 +1948,7 @@ impl SyncService {
             return Err(AppError::InvalidSinceVersion);
         }
 
-        // Verify membership
-        self.verify_membership_readonly(workspace_id, user_id).await?;
+        // Membership is verified by workspace_context_guard middleware.
 
         // Determine effective limit (default 500, max 1000)
         let effective_limit = limit

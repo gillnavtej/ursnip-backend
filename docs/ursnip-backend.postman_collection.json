@@ -1,722 +1,891 @@
 {
-  "info": {
-    "name": "ursnip-backend",
-    "description": "API collection for the ursnip-backend server. Covers auth, sync, AI, subscriptions, teams, admin, and webhooks.",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-  },
-  "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8080" },
-    { "key": "accessToken", "value": "" },
-    { "key": "refreshToken", "value": "" },
-    { "key": "adminAccessToken", "value": "" },
-    { "key": "workspaceId", "value": "" },
-    { "key": "snippetId", "value": "" },
-    { "key": "folderId", "value": "" },
-    { "key": "userId", "value": "" },
-    { "key": "subscriptionId", "value": "" },
-    { "key": "sessionId", "value": "" }
-  ],
-  "auth": {
-    "type": "bearer",
-    "bearer": [{ "key": "token", "value": "{{accessToken}}" }]
-  },
-  "item": [
-    {
-      "name": "Health",
-      "item": [
-        {
-          "name": "Health Check",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/health",
-            "auth": { "type": "noauth" }
-          }
-        },
-        {
-          "name": "Readiness Check",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/ready",
-            "auth": { "type": "noauth" }
-          }
-        }
-      ]
-    },
-    {
-      "name": "Auth",
-      "item": [
-        {
-          "name": "Register",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "var json = pm.response.json();",
-                  "if (json.access_token) { pm.collectionVariables.set('accessToken', json.access_token); }",
-                  "if (json.refresh_token) { pm.collectionVariables.set('refreshToken', json.refresh_token); }",
-                  "if (json.user && json.user.id) { pm.collectionVariables.set('userId', json.user.id); }"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/register",
-            "auth": { "type": "noauth" },
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"securepass123\",\n  \"client_type\": \"native\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Login",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "var json = pm.response.json();",
-                  "if (json.access_token) { pm.collectionVariables.set('accessToken', json.access_token); }",
-                  "if (json.refresh_token) { pm.collectionVariables.set('refreshToken', json.refresh_token); }"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/login",
-            "auth": { "type": "noauth" },
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"securepass123\",\n  \"client_type\": \"native\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Refresh Token",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "var json = pm.response.json();",
-                  "if (json.access_token) { pm.collectionVariables.set('accessToken', json.access_token); }",
-                  "if (json.refresh_token) { pm.collectionVariables.set('refreshToken', json.refresh_token); }"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/refresh",
-            "auth": { "type": "noauth" },
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\",\n  \"client_type\": \"native\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Logout",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/logout",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}"
-            }
-          }
-        },
-        {
-          "name": "OAuth Authorize (Google, Native)",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/auth/oauth/google/authorize?client=native",
-            "auth": { "type": "noauth" }
-          }
-        },
-        {
-          "name": "OAuth Authorize (GitHub, Web)",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/auth/oauth/github/authorize?client=web",
-            "auth": { "type": "noauth" }
-          }
-        },
-        {
-          "name": "Forgot Password",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/forgot-password",
-            "auth": { "type": "noauth" },
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"user@example.com\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Reset Password",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/reset-password",
-            "auth": { "type": "noauth" },
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"token\": \"reset-token-from-email\",\n  \"password\": \"newpassword123\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Update Profile",
-          "request": {
-            "method": "PATCH",
-            "url": "{{baseUrl}}/auth/profile",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"first_name\": \"John\",\n  \"last_name\": \"Doe\",\n  \"timezone\": \"America/New_York\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Change Email",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/change-email",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"new_email\": \"newemail@example.com\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Change Password",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/auth/change-password",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"current_password\": \"oldpass\",\n  \"new_password\": \"newpass123\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Delete Account",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/auth/account"
-          }
-        },
-        {
-          "name": "List Sessions",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/auth/sessions"
-          }
-        },
-        {
-          "name": "Revoke Session",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/auth/sessions/{{sessionId}}"
-          }
-        }
-      ]
-    },
-    {
-      "name": "Sync",
-      "description": "Native client only. Requires client_type=native in JWT.",
-      "item": [
-        {
-          "name": "Create Snippet",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "var json = pm.response.json();",
-                  "if (json.id) { pm.collectionVariables.set('snippetId', json.id); }"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/sync/snippets",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"trigger\": \"hello\",\n  \"content\": \"Hello, world!\",\n  \"snippet_type\": \"text\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Update Snippet",
-          "request": {
-            "method": "PATCH",
-            "url": "{{baseUrl}}/sync/snippets/{{snippetId}}",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"content\": \"Updated content\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Delete Snippet",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/sync/snippets/{{snippetId}}"
-          }
-        },
-        {
-          "name": "Batch Operations",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/sync/snippets/batch",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"operations\": [\n    {\n      \"type\": \"create_snippet\",\n      \"workspace_id\": \"{{workspaceId}}\",\n      \"trigger\": \"batch1\",\n      \"content\": \"Content 1\",\n      \"snippet_type\": \"text\"\n    },\n    {\n      \"type\": \"create_snippet\",\n      \"workspace_id\": \"{{workspaceId}}\",\n      \"trigger\": \"batch2\",\n      \"content\": \"Content 2\",\n      \"snippet_type\": \"text\"\n    }\n  ]\n}"
-            }
-          }
-        },
-        {
-          "name": "Create Folder",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "var json = pm.response.json();",
-                  "if (json.id) { pm.collectionVariables.set('folderId', json.id); }"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/sync/folders",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"name\": \"My Folder\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Update Folder",
-          "request": {
-            "method": "PATCH",
-            "url": "{{baseUrl}}/sync/folders/{{folderId}}",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Renamed Folder\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Delete Folder",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/sync/folders/{{folderId}}"
-          }
-        },
-        {
-          "name": "Get Snapshot",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/sync/snapshot?workspace_id={{workspaceId}}"
-          }
-        },
-        {
-          "name": "Get Deltas",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/sync/deltas?workspace_id={{workspaceId}}&since_version=0&limit=100"
-          }
-        }
-      ]
-    },
-    {
-      "name": "AI",
-      "description": "Native client only.",
-      "item": [
-        {
-          "name": "Expand Snippet",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/ai/expand",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"trigger\": \"greeting\",\n  \"system_prompt\": \"Generate a professional email greeting\",\n  \"context\": \"Recipient: engineering team\"\n}"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "Subscriptions",
-      "description": "Web client only.",
-      "item": [
-        {
-          "name": "Initiate Upgrade",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/subscriptions/upgrade",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Checkout",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/subscriptions/checkout",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"tier\": \"pro\",\n  \"billing_cycle_months\": 12,\n  \"coupon_code\": \"\",\n  \"country_code\": \"US\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Get Current Subscription",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/subscriptions/current?workspace_id={{workspaceId}}"
-          }
-        }
-      ]
-    },
-    {
-      "name": "Teams",
-      "description": "Web client only.",
-      "item": [
-        {
-          "name": "Create Team Workspace",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/teams",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"My Team\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Generate Invite",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/teams/{{workspaceId}}/invites",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"max_uses\": 5,\n  \"expires_in_hours\": 72\n}"
-            }
-          }
-        },
-        {
-          "name": "Join Team",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/teams/{{workspaceId}}/join",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"invite_code\": \"abc123xyz\"\n}"
-            }
-          }
-        },
-        {
-          "name": "Get Team",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/teams/{{workspaceId}}"
-          }
-        },
-        {
-          "name": "List Members",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/teams/{{workspaceId}}/members"
-          }
-        },
-        {
-          "name": "Remove Member",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}/teams/{{workspaceId}}/members/{{userId}}"
-          }
-        }
-      ]
-    },
-    {
-      "name": "Admin",
-      "description": "Web client only, role=admin required.",
-      "auth": {
-        "type": "bearer",
-        "bearer": [{ "key": "token", "value": "{{adminAccessToken}}" }]
-      },
-      "item": [
-        {
-          "name": "Users",
-          "item": [
-            {
-              "name": "List Users",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/users?page=1&per_page=20" }
-            },
-            {
-              "name": "Get User",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/users/{{userId}}" }
-            },
-            {
-              "name": "Suspend User",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/users/{{userId}}/suspend",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{}" }
-              }
-            },
-            {
-              "name": "Unsuspend User",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/users/{{userId}}/unsuspend",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{}" }
-              }
-            },
-            {
-              "name": "Force Password Reset",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/users/{{userId}}/force-password-reset",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{}" }
-              }
-            },
-            {
-              "name": "Delete User",
-              "request": { "method": "DELETE", "url": "{{baseUrl}}/admin/users/{{userId}}" }
-            }
-          ]
-        },
-        {
-          "name": "Workspaces",
-          "item": [
-            {
-              "name": "List Workspaces",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/workspaces?page=1&per_page=20" }
-            },
-            {
-              "name": "Get Workspace",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/workspaces/{{workspaceId}}" }
-            },
-            {
-              "name": "Deactivate Workspace",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/workspaces/{{workspaceId}}/deactivate",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{}" }
-              }
-            },
-            {
-              "name": "Delete Workspace",
-              "request": { "method": "DELETE", "url": "{{baseUrl}}/admin/workspaces/{{workspaceId}}?confirm=true" }
-            }
-          ]
-        },
-        {
-          "name": "Subscriptions",
-          "item": [
-            {
-              "name": "List Subscriptions",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/subscriptions?page=1&per_page=20" }
-            },
-            {
-              "name": "Get Subscription",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}" }
-            },
-            {
-              "name": "Extend Subscription",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}/extend",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"months\": 3,\n  \"days\": 0\n}" }
-              }
-            },
-            {
-              "name": "Cancel Subscription",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}/cancel",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{}" }
-              }
-            },
-            {
-              "name": "Override Tier",
-              "request": {
-                "method": "PATCH",
-                "url": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}/tier",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"tier\": \"pro\"\n}" }
-              }
-            }
-          ]
-        },
-        {
-          "name": "Coupons & Discounts",
-          "item": [
-            {
-              "name": "List Discounts",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/discounts" }
-            },
-            {
-              "name": "Create Discount",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/discounts",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"discount_type\": \"percentage\",\n  \"value\": \"0.20\"\n}" }
-              }
-            },
-            {
-              "name": "List Coupons",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/coupons?page=1&per_page=20" }
-            },
-            {
-              "name": "Create Coupon",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/coupons",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"code\": \"SAVE20\",\n  \"discount_id\": \"uuid\",\n  \"max_uses\": 100\n}" }
-              }
-            },
-            {
-              "name": "Referral Stats",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/referrals" }
-            }
-          ]
-        },
-        {
-          "name": "Feature Flags",
-          "item": [
-            {
-              "name": "List Feature Flags",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/feature-flags" }
-            },
-            {
-              "name": "Create Feature Flag",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/feature-flags",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"name\": \"new-feature\",\n  \"enabled\": false,\n  \"description\": \"A new feature flag\"\n}" }
-              }
-            },
-            {
-              "name": "Update Feature Flag",
-              "request": {
-                "method": "PUT",
-                "url": "{{baseUrl}}/admin/feature-flags/new-feature",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"enabled\": true,\n  \"description\": \"Updated\"\n}" }
-              }
-            },
-            {
-              "name": "Delete Feature Flag",
-              "request": { "method": "DELETE", "url": "{{baseUrl}}/admin/feature-flags/new-feature" }
-            }
-          ]
-        },
-        {
-          "name": "Other",
-          "item": [
-            {
-              "name": "List Tax Rates",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/tax-rates" }
-            },
-            {
-              "name": "Create Tax Rate",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/tax-rates",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"country_code\": \"US\",\n  \"rate\": \"0.10\",\n  \"tax_name\": \"Sales Tax\"\n}" }
-              }
-            },
-            {
-              "name": "List Audit Logs",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/audit-logs?page=1&per_page=20" }
-            },
-            {
-              "name": "List Admins",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/admins" }
-            },
-            {
-              "name": "Send Admin Invite",
-              "request": {
-                "method": "POST",
-                "url": "{{baseUrl}}/admin/invites",
-                "header": [{ "key": "Content-Type", "value": "application/json" }],
-                "body": { "mode": "raw", "raw": "{\n  \"email\": \"newadmin@example.com\"\n}" }
-              }
-            },
-            {
-              "name": "Overview Stats",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/stats/overview" }
-            },
-            {
-              "name": "Referral Analytics",
-              "request": { "method": "GET", "url": "{{baseUrl}}/admin/stats/referrals" }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Webhooks",
-      "item": [
-        {
-          "name": "Billing Webhook",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/webhooks/billing",
-            "auth": { "type": "noauth" },
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Webhook-Signature", "value": "hmac-sha256-signature" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"evt_123\",\n  \"event_type\": \"subscription.activated\",\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"external_subscription_id\": \"ext_sub_456\",\n  \"timestamp\": \"2024-01-15T10:00:00Z\"\n}"
-            }
-          }
-        }
-      ]
-    }
-  ]
+	"info": {
+		"_postman_id": "ursnip-backend-collection",
+		"name": "Ursnip Backend API",
+		"description": "Complete API collection for the ursnip-backend Rust/Axum server. Base URL: http://localhost:8080. Authenticated endpoints require Bearer token in Authorization header.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{ "key": "baseUrl", "value": "http://localhost:8080" },
+		{ "key": "accessToken", "value": "" },
+		{ "key": "refreshToken", "value": "" },
+		{ "key": "userId", "value": "" },
+		{ "key": "workspaceId", "value": "" },
+		{ "key": "sessionId", "value": "" },
+		{ "key": "snippetId", "value": "" },
+		{ "key": "folderId", "value": "" },
+		{ "key": "subscriptionId", "value": "" },
+		{ "key": "teamWorkspaceId", "value": "" },
+		{ "key": "inviteCode", "value": "" },
+		{ "key": "adminInviteToken", "value": "" }
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [{ "key": "token", "value": "{{accessToken}}" }]
+	},
+	"item": [
+		{
+			"name": "Health",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] },
+						"description": "Liveness check. Verifies Postgres reachability via SELECT 1."
+					}
+				},
+				{
+					"name": "Readiness Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/ready", "host": ["{{baseUrl}}"], "path": ["ready"] },
+						"description": "Readiness check. Verifies DB, scheduler, and email subsystems are initialized."
+					}
+				}
+			]
+		},
+		{
+			"name": "Auth - Public",
+			"item": [
+				{
+					"name": "Register",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('accessToken', jsonData.access_token);", "pm.collectionVariables.set('refreshToken', jsonData.refresh_token);", "pm.collectionVariables.set('userId', jsonData.user.id);", "pm.collectionVariables.set('workspaceId', jsonData.user.workspace_id);"] } }],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"password\": \"password123\",\n  \"client_type\": \"native\",\n  \"first_name\": \"Test\",\n  \"last_name\": \"User\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/register", "host": ["{{baseUrl}}"], "path": ["auth", "register"] },
+						"description": "Register a new user. Returns access_token, refresh_token, and user info. Creates individual workspace + free subscription."
+					}
+				},
+				{
+					"name": "Login",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('accessToken', jsonData.access_token);", "pm.collectionVariables.set('refreshToken', jsonData.refresh_token);", "pm.collectionVariables.set('userId', jsonData.user.id);", "pm.collectionVariables.set('workspaceId', jsonData.user.workspace_id);"] } }],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"password\": \"password123\",\n  \"client_type\": \"native\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+						"description": "Authenticate with email/password. Returns token pair. Enforces brute-force protection (5 failures = 15min lockout)."
+					}
+				},
+				{
+					"name": "Refresh Token",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('accessToken', jsonData.access_token);", "pm.collectionVariables.set('refreshToken', jsonData.refresh_token);"] } }],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\",\n  \"client_type\": \"native\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/refresh", "host": ["{{baseUrl}}"], "path": ["auth", "refresh"] },
+						"description": "Rotate refresh token. Old token is invalidated (token rotation). Reuse of old token triggers security lockout."
+					}
+				},
+				{
+					"name": "Forgot Password",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"testuser@example.com\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["auth", "forgot-password"] },
+						"description": "Request password reset email. Always returns 200 to prevent email enumeration."
+					}
+				},
+				{
+					"name": "Reset Password",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"token\": \"reset-token-from-email\",\n  \"password\": \"newpassword123\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/reset-password", "host": ["{{baseUrl}}"], "path": ["auth", "reset-password"] },
+						"description": "Reset password using token from email. Revokes all refresh tokens. Token expires after 30 minutes."
+					}
+				},
+				{
+					"name": "Verify Email Change",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/verify-email-change?token=verification-token", "host": ["{{baseUrl}}"], "path": ["auth", "verify-email-change"], "query": [{ "key": "token", "value": "verification-token" }] },
+						"description": "Verify an email change token (from verification email link). Updates user email on success."
+					}
+				},
+				{
+					"name": "Register via Admin Invite",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('accessToken', jsonData.access_token);", "pm.collectionVariables.set('refreshToken', jsonData.refresh_token);"] } }],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"token\": \"{{adminInviteToken}}\",\n  \"password\": \"adminpass123\",\n  \"first_name\": \"Admin\",\n  \"last_name\": \"User\",\n  \"client_type\": \"web\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/register-invite", "host": ["{{baseUrl}}"], "path": ["auth", "register-invite"] },
+						"description": "Register a new admin user via a valid admin invite token. Creates user with role=admin."
+					}
+				},
+				{
+					"name": "OAuth Authorize (Google)",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/oauth/google/authorize?client=web", "host": ["{{baseUrl}}"], "path": ["auth", "oauth", "google", "authorize"], "query": [{ "key": "client", "value": "web" }] },
+						"description": "Redirect to Google OAuth authorization page. Returns 302 redirect."
+					}
+				},
+				{
+					"name": "OAuth Authorize (GitHub)",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/oauth/github/authorize?client=native", "host": ["{{baseUrl}}"], "path": ["auth", "oauth", "github", "authorize"], "query": [{ "key": "client", "value": "native" }] },
+						"description": "Redirect to GitHub OAuth authorization page. Returns 302 redirect."
+					}
+				}
+			]
+		},
+		{
+			"name": "Auth - Protected",
+			"item": [
+				{
+					"name": "Logout",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/logout", "host": ["{{baseUrl}}"], "path": ["auth", "logout"] },
+						"description": "Invalidate the current refresh token. Returns 204 No Content."
+					}
+				},
+				{
+					"name": "Get Profile",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/profile", "host": ["{{baseUrl}}"], "path": ["auth", "profile"] },
+						"description": "Get the authenticated user's full profile."
+					}
+				},
+				{
+					"name": "Update Profile",
+					"request": {
+						"method": "PATCH",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"first_name\": \"John\",\n  \"last_name\": \"Doe\",\n  \"timezone\": \"America/New_York\",\n  \"language\": \"en\",\n  \"country_code\": \"US\",\n  \"phone\": \"+1234567890\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/profile", "host": ["{{baseUrl}}"], "path": ["auth", "profile"] },
+						"description": "Update user profile fields. Only provided fields are updated."
+					}
+				},
+				{
+					"name": "Change Email",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"new_email\": \"newemail@example.com\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/change-email", "host": ["{{baseUrl}}"], "path": ["auth", "change-email"] },
+						"description": "Initiate email change. Sends verification link to new address. Token expires in 24h."
+					}
+				},
+				{
+					"name": "Change Password",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"current_password\": \"password123\",\n  \"new_password\": \"newpassword456\"\n}" },
+						"url": { "raw": "{{baseUrl}}/auth/change-password", "host": ["{{baseUrl}}"], "path": ["auth", "change-password"] },
+						"description": "Change password. Requires current password. Revokes ALL refresh tokens after success."
+					}
+				},
+				{
+					"name": "Delete Account",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/account", "host": ["{{baseUrl}}"], "path": ["auth", "account"] },
+						"description": "Soft-delete account. Recoverable via login within 30 days. Fails if user owns team workspaces."
+					}
+				},
+				{
+					"name": "List Sessions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/sessions", "host": ["{{baseUrl}}"], "path": ["auth", "sessions"] },
+						"description": "List all active sessions (non-revoked, non-expired refresh tokens) for the authenticated user."
+					}
+				},
+				{
+					"name": "Revoke Session",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/auth/sessions/{{sessionId}}", "host": ["{{baseUrl}}"], "path": ["auth", "sessions", "{{sessionId}}"] },
+						"description": "Revoke a specific session by its ID. Returns 204 No Content."
+					}
+				}
+			]
+		},
+		{
+			"name": "Sync - Snippets",
+			"description": "All sync endpoints require client_type=native in the JWT.",
+			"item": [
+				{
+					"name": "Create Snippet",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('snippetId', jsonData.id);"] } }],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"trigger\": \"hello\",\n  \"content\": \"Hello, world!\",\n  \"snippet_type\": \"text\",\n  \"folder_id\": null\n}" },
+						"url": { "raw": "{{baseUrl}}/sync/snippets", "host": ["{{baseUrl}}"], "path": ["sync", "snippets"] },
+						"description": "Create a new snippet. Free tier: max 10 snippets, max 2000 chars content. Trigger must be unique within workspace."
+					}
+				},
+				{
+					"name": "Update Snippet",
+					"request": {
+						"method": "PATCH",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"trigger\": \"updated-trigger\",\n  \"content\": \"Updated content here\",\n  \"snippet_type\": \"text\"\n}" },
+						"url": { "raw": "{{baseUrl}}/sync/snippets/{{snippetId}}", "host": ["{{baseUrl}}"], "path": ["sync", "snippets", "{{snippetId}}"] },
+						"description": "Update snippet fields. All fields optional. Increments version."
+					}
+				},
+				{
+					"name": "Delete Snippet",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/sync/snippets/{{snippetId}}", "host": ["{{baseUrl}}"], "path": ["sync", "snippets", "{{snippetId}}"] },
+						"description": "Soft-delete a snippet. Returns 204 No Content."
+					}
+				},
+				{
+					"name": "Batch Operations",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"operations\": [\n    {\n      \"type\": \"create_snippet\",\n      \"workspace_id\": \"{{workspaceId}}\",\n      \"trigger\": \"batch1\",\n      \"content\": \"Batch created snippet\",\n      \"snippet_type\": \"text\"\n    },\n    {\n      \"type\": \"update_snippet\",\n      \"id\": \"{{snippetId}}\",\n      \"content\": \"Batch updated content\"\n    },\n    {\n      \"type\": \"delete_snippet\",\n      \"id\": \"{{snippetId}}\"\n    }\n  ]\n}" },
+						"url": { "raw": "{{baseUrl}}/sync/snippets/batch", "host": ["{{baseUrl}}"], "path": ["sync", "snippets", "batch"] },
+						"description": "Execute multiple snippet operations atomically. Max 100 items per batch. Rolls back entirely on any error."
+					}
+				}
+			]
+		},
+		{
+			"name": "Sync - Folders",
+			"item": [
+				{
+					"name": "Create Folder",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('folderId', jsonData.id);"] } }],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"name\": \"My Folder\"\n}" },
+						"url": { "raw": "{{baseUrl}}/sync/folders", "host": ["{{baseUrl}}"], "path": ["sync", "folders"] },
+						"description": "Create a new folder. Free tier: max 3 folders."
+					}
+				},
+				{
+					"name": "Update Folder",
+					"request": {
+						"method": "PATCH",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"name\": \"Renamed Folder\"\n}" },
+						"url": { "raw": "{{baseUrl}}/sync/folders/{{folderId}}", "host": ["{{baseUrl}}"], "path": ["sync", "folders", "{{folderId}}"] },
+						"description": "Update folder name. Returns updated folder with incremented version."
+					}
+				},
+				{
+					"name": "Delete Folder",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/sync/folders/{{folderId}}", "host": ["{{baseUrl}}"], "path": ["sync", "folders", "{{folderId}}"] },
+						"description": "Soft-delete a folder. Returns 204 No Content."
+					}
+				}
+			]
+		},
+		{
+			"name": "Sync - Snapshot & Deltas",
+			"item": [
+				{
+					"name": "Get Snapshot",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/sync/snapshot?workspace_id={{workspaceId}}", "host": ["{{baseUrl}}"], "path": ["sync", "snapshot"], "query": [{ "key": "workspace_id", "value": "{{workspaceId}}" }] },
+						"description": "Full workspace snapshot with all active snippets and folders plus current version number."
+					}
+				},
+				{
+					"name": "Get Deltas",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/sync/deltas?workspace_id={{workspaceId}}&since_version=0&limit=500", "host": ["{{baseUrl}}"], "path": ["sync", "deltas"], "query": [{ "key": "workspace_id", "value": "{{workspaceId}}" }, { "key": "since_version", "value": "0" }, { "key": "limit", "value": "500" }] },
+						"description": "Delta polling for incremental sync. Max limit=1000. Deltas retained for 30 days."
+					}
+				},
+				{
+					"name": "WebSocket Upgrade",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/sync/ws", "host": ["{{baseUrl}}"], "path": ["sync", "ws"] },
+						"description": "WebSocket upgrade endpoint for real-time push notifications. Currently returns 501 (placeholder)."
+					}
+				}
+			]
+		},
+		{
+			"name": "AI",
+			"item": [
+				{
+					"name": "AI Expand",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"trigger\": \"greeting\",\n  \"system_prompt\": \"Generate a professional greeting email\",\n  \"context\": \"For a new client meeting\"\n}" },
+						"url": { "raw": "{{baseUrl}}/ai/expand", "host": ["{{baseUrl}}"], "path": ["ai", "expand"] },
+						"description": "Expand a trigger via AI provider. Requires native client. Quota: free=50/day, pro/teams=1000/day. Max trigger=500 chars, system_prompt=10KB, context=50KB."
+					}
+				}
+			]
+		},
+		{
+			"name": "Subscriptions",
+			"description": "All subscription endpoints require client_type=web in the JWT.",
+			"item": [
+				{
+					"name": "Upgrade Subscription",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\"\n}" },
+						"url": { "raw": "{{baseUrl}}/subscriptions/upgrade", "host": ["{{baseUrl}}"], "path": ["subscriptions", "upgrade"] },
+						"description": "Initiate upgrade from free to pro tier. Sets status to pending_payment."
+					}
+				},
+				{
+					"name": "Checkout",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"workspace_id\": \"{{workspaceId}}\",\n  \"tier\": \"pro\",\n  \"billing_cycle_months\": 12,\n  \"coupon_code\": null,\n  \"discount_id\": null,\n  \"country_code\": \"US\",\n  \"success_url\": \"http://localhost:3000/billing/success\",\n  \"cancel_url\": \"http://localhost:3000/billing/cancel\"\n}" },
+						"url": { "raw": "{{baseUrl}}/subscriptions/checkout", "host": ["{{baseUrl}}"], "path": ["subscriptions", "checkout"] },
+						"description": "Compute invoice and get checkout URL. Validates coupons/discounts, computes tax, returns Paddle checkout link."
+					}
+				},
+				{
+					"name": "Get Current Subscription",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/subscriptions/current?workspace_id={{workspaceId}}", "host": ["{{baseUrl}}"], "path": ["subscriptions", "current"], "query": [{ "key": "workspace_id", "value": "{{workspaceId}}" }] },
+						"description": "Get the current subscription for a workspace including tier, status, and period dates."
+					}
+				}
+			]
+		},
+		{
+			"name": "Teams",
+			"description": "All team endpoints require client_type=web in the JWT.",
+			"item": [
+				{
+					"name": "Create Team",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "pm.collectionVariables.set('teamWorkspaceId', jsonData.id);"] } }],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"name\": \"My Team Workspace\"\n}" },
+						"url": { "raw": "{{baseUrl}}/teams", "host": ["{{baseUrl}}"], "path": ["teams"] },
+						"description": "Create a new team workspace. The authenticated user becomes the owner."
+					}
+				},
+				{
+					"name": "Get Team",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/teams/{{teamWorkspaceId}}", "host": ["{{baseUrl}}"], "path": ["teams", "{{teamWorkspaceId}}"] },
+						"description": "Get team workspace details including name, type, and owner."
+					}
+				},
+				{
+					"name": "Create Invite",
+					"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "if(jsonData.invite_code) pm.collectionVariables.set('inviteCode', jsonData.invite_code);"] } }],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"max_uses\": 5,\n  \"expires_in_days\": 7\n}" },
+						"url": { "raw": "{{baseUrl}}/teams/{{teamWorkspaceId}}/invites", "host": ["{{baseUrl}}"], "path": ["teams", "{{teamWorkspaceId}}", "invites"] },
+						"description": "Create an invite link for the team workspace. Only the owner can create invites."
+					}
+				},
+				{
+					"name": "Join via Invite",
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\n  \"invite_code\": \"{{inviteCode}}\"\n}" },
+						"url": { "raw": "{{baseUrl}}/teams/{{teamWorkspaceId}}/join", "host": ["{{baseUrl}}"], "path": ["teams", "{{teamWorkspaceId}}", "join"] },
+						"description": "Join a team workspace using an invite code. Max 3 members per team."
+					}
+				},
+				{
+					"name": "List Members",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/teams/{{teamWorkspaceId}}/members", "host": ["{{baseUrl}}"], "path": ["teams", "{{teamWorkspaceId}}", "members"] },
+						"description": "List all members of a team workspace with their roles."
+					}
+				},
+				{
+					"name": "Remove Member",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": { "raw": "{{baseUrl}}/teams/{{teamWorkspaceId}}/members/{{userId}}", "host": ["{{baseUrl}}"], "path": ["teams", "{{teamWorkspaceId}}", "members", "{{userId}}"] },
+						"description": "Remove a member from a team workspace. Only the owner can do this. Cannot remove owner."
+					}
+				}
+			]
+		},
+		{
+			"name": "Webhooks",
+			"item": [
+				{
+					"name": "Billing Webhook",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Webhook-Signature", "value": "hmac-sha256-signature-here" }],
+						"body": { "mode": "raw", "raw": "{\n  \"event_id\": \"evt_123456\",\n  \"event_type\": \"subscription.activated\",\n  \"data\": {\n    \"subscription_id\": \"sub_abc\",\n    \"workspace_id\": \"{{workspaceId}}\",\n    \"tier\": \"pro\",\n    \"period_start\": \"2024-01-15T00:00:00Z\",\n    \"period_end\": \"2025-01-15T00:00:00Z\"\n  }\n}" },
+						"url": { "raw": "{{baseUrl}}/webhooks/billing", "host": ["{{baseUrl}}"], "path": ["webhooks", "billing"] },
+						"description": "Billing provider webhook. Verified via X-Webhook-Signature (HMAC-SHA256). Events: subscription.activated, renewed, past_due, cancelled, reactivated. Idempotent."
+					}
+				}
+			]
+		},
+		{
+			"name": "Admin",
+			"description": "All admin endpoints require client_type=web and role=admin in the JWT. Every action writes an audit log.",
+			"item": [
+				{
+					"name": "Users",
+					"item": [
+						{
+							"name": "List Users",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/users?page=1&per_page=20&status=active", "host": ["{{baseUrl}}"], "path": ["admin", "users"], "query": [{ "key": "page", "value": "1" }, { "key": "per_page", "value": "20" }, { "key": "status", "value": "active", "disabled": true }, { "key": "role", "value": "user", "disabled": true }, { "key": "search", "value": "", "disabled": true }] },
+								"description": "List users with pagination. Filters: status (active/suspended), role (user/admin), search."
+							}
+						},
+						{
+							"name": "Get User",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/users/{{userId}}", "host": ["{{baseUrl}}"], "path": ["admin", "users", "{{userId}}"] },
+								"description": "Get detailed user information including workspaces and subscription status."
+							}
+						},
+						{
+							"name": "Suspend User",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/users/{{userId}}/suspend", "host": ["{{baseUrl}}"], "path": ["admin", "users", "{{userId}}", "suspend"] },
+								"description": "Suspend a user account. Suspended users cannot login or use the API."
+							}
+						},
+						{
+							"name": "Unsuspend User",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/users/{{userId}}/unsuspend", "host": ["{{baseUrl}}"], "path": ["admin", "users", "{{userId}}", "unsuspend"] },
+								"description": "Unsuspend a previously suspended user account."
+							}
+						},
+						{
+							"name": "Force Password Reset",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/users/{{userId}}/force-password-reset", "host": ["{{baseUrl}}"], "path": ["admin", "users", "{{userId}}", "force-password-reset"] },
+								"description": "Force a password reset on a user. Sets must_reset_password flag. Returns 204."
+							}
+						},
+						{
+							"name": "Delete User",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/users/{{userId}}", "host": ["{{baseUrl}}"], "path": ["admin", "users", "{{userId}}"] },
+								"description": "Soft-delete a user account. Returns 204 No Content."
+							}
+						}
+					]
+				},
+				{
+					"name": "Workspaces",
+					"item": [
+						{
+							"name": "List Workspaces",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/workspaces?page=1&per_page=20", "host": ["{{baseUrl}}"], "path": ["admin", "workspaces"], "query": [{ "key": "page", "value": "1" }, { "key": "per_page", "value": "20" }, { "key": "type", "value": "team", "disabled": true }] },
+								"description": "List workspaces with pagination. Filter by type (individual/team)."
+							}
+						},
+						{
+							"name": "Get Workspace",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/workspaces/{{workspaceId}}", "host": ["{{baseUrl}}"], "path": ["admin", "workspaces", "{{workspaceId}}"] },
+								"description": "Get detailed workspace information including members and subscription."
+							}
+						},
+						{
+							"name": "Deactivate Workspace",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/workspaces/{{workspaceId}}/deactivate", "host": ["{{baseUrl}}"], "path": ["admin", "workspaces", "{{workspaceId}}", "deactivate"] },
+								"description": "Deactivate a workspace. Sets subscription to deactivated status and closes WebSocket connections."
+							}
+						},
+						{
+							"name": "Delete Workspace",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/workspaces/{{workspaceId}}?confirm=true", "host": ["{{baseUrl}}"], "path": ["admin", "workspaces", "{{workspaceId}}"], "query": [{ "key": "confirm", "value": "true" }] },
+								"description": "Hard-delete a workspace. Requires confirm=true query parameter."
+							}
+						}
+					]
+				},
+				{
+					"name": "Subscriptions",
+					"item": [
+						{
+							"name": "List Subscriptions",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/subscriptions?page=1&per_page=20", "host": ["{{baseUrl}}"], "path": ["admin", "subscriptions"], "query": [{ "key": "page", "value": "1" }, { "key": "per_page", "value": "20" }, { "key": "tier", "value": "pro", "disabled": true }, { "key": "status", "value": "active", "disabled": true }] },
+								"description": "List subscriptions with pagination. Filters: tier (free/pro/teams), status."
+							}
+						},
+						{
+							"name": "Get Subscription",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}", "host": ["{{baseUrl}}"], "path": ["admin", "subscriptions", "{{subscriptionId}}"] },
+								"description": "Get detailed subscription information."
+							}
+						},
+						{
+							"name": "Extend Subscription",
+							"request": {
+								"method": "POST",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"days\": 30\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}/extend", "host": ["{{baseUrl}}"], "path": ["admin", "subscriptions", "{{subscriptionId}}", "extend"] },
+								"description": "Extend a subscription's period_end by N days."
+							}
+						},
+						{
+							"name": "Cancel Subscription",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}/cancel", "host": ["{{baseUrl}}"], "path": ["admin", "subscriptions", "{{subscriptionId}}", "cancel"] },
+								"description": "Force-cancel a subscription immediately."
+							}
+						},
+						{
+							"name": "Override Tier",
+							"request": {
+								"method": "PATCH",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"tier\": \"pro\"\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/subscriptions/{{subscriptionId}}/tier", "host": ["{{baseUrl}}"], "path": ["admin", "subscriptions", "{{subscriptionId}}", "tier"] },
+								"description": "Override a subscription's tier (free/pro/teams)."
+							}
+						}
+					]
+				},
+				{
+					"name": "Discounts & Coupons",
+					"item": [
+						{
+							"name": "List Discounts",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/discounts", "host": ["{{baseUrl}}"], "path": ["admin", "discounts"] },
+								"description": "List all discounts."
+							}
+						},
+						{
+							"name": "Create Discount",
+							"request": {
+								"method": "POST",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"type\": \"percentage\",\n  \"value\": 20.0\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/discounts", "host": ["{{baseUrl}}"], "path": ["admin", "discounts"] },
+								"description": "Create a new discount. Type: percentage or flat."
+							}
+						},
+						{
+							"name": "Update Discount",
+							"request": {
+								"method": "PATCH",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"active\": false\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/discounts/{{subscriptionId}}", "host": ["{{baseUrl}}"], "path": ["admin", "discounts", "{{subscriptionId}}"] },
+								"description": "Update a discount (typically to deactivate it)."
+							}
+						},
+						{
+							"name": "List Coupons",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/coupons?page=1&per_page=20", "host": ["{{baseUrl}}"], "path": ["admin", "coupons"], "query": [{ "key": "page", "value": "1" }, { "key": "per_page", "value": "20" }, { "key": "type", "value": "platform", "disabled": true }, { "key": "active", "value": "true", "disabled": true }] },
+								"description": "List coupons with pagination. Filters: type (platform/referral), active."
+							}
+						},
+						{
+							"name": "Get Coupon",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/coupons/{{subscriptionId}}", "host": ["{{baseUrl}}"], "path": ["admin", "coupons", "{{subscriptionId}}"] },
+								"description": "Get a single coupon by ID."
+							}
+						},
+						{
+							"name": "Create Coupon",
+							"request": {
+								"method": "POST",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"code\": \"SAVE20\",\n  \"type\": \"platform\",\n  \"discount_id\": \"uuid-of-discount\",\n  \"max_uses\": 100,\n  \"valid_from\": \"2024-01-01T00:00:00Z\",\n  \"valid_until\": \"2024-12-31T23:59:59Z\"\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/coupons", "host": ["{{baseUrl}}"], "path": ["admin", "coupons"] },
+								"description": "Create a new platform coupon linked to a discount."
+							}
+						},
+						{
+							"name": "Update Coupon",
+							"request": {
+								"method": "PATCH",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"active\": false,\n  \"max_uses\": 50\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/coupons/{{subscriptionId}}", "host": ["{{baseUrl}}"], "path": ["admin", "coupons", "{{subscriptionId}}"] },
+								"description": "Update an existing coupon (deactivate, change max_uses, etc.)."
+							}
+						},
+						{
+							"name": "Get Referral Stats",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/referrals", "host": ["{{baseUrl}}"], "path": ["admin", "referrals"] },
+								"description": "Get referral statistics summary."
+							}
+						}
+					]
+				},
+				{
+					"name": "Feature Flags",
+					"item": [
+						{
+							"name": "List Feature Flags",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/feature-flags", "host": ["{{baseUrl}}"], "path": ["admin", "feature-flags"] },
+								"description": "List all feature flags with enabled/disabled status."
+							}
+						},
+						{
+							"name": "Create Feature Flag",
+							"request": {
+								"method": "POST",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"name\": \"new-feature\",\n  \"enabled\": false,\n  \"description\": \"Description of the new feature flag\"\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/feature-flags", "host": ["{{baseUrl}}"], "path": ["admin", "feature-flags"] },
+								"description": "Create a new feature flag. Name must be kebab-case, max 100 chars."
+							}
+						},
+						{
+							"name": "Update Feature Flag",
+							"request": {
+								"method": "PUT",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"enabled\": true,\n  \"description\": \"Updated description\"\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/feature-flags/new-feature", "host": ["{{baseUrl}}"], "path": ["admin", "feature-flags", "new-feature"] },
+								"description": "Update a feature flag's enabled status and/or description."
+							}
+						},
+						{
+							"name": "Delete Feature Flag",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/feature-flags/new-feature", "host": ["{{baseUrl}}"], "path": ["admin", "feature-flags", "new-feature"] },
+								"description": "Delete a feature flag. Returns 204 No Content."
+							}
+						}
+					]
+				},
+				{
+					"name": "Tax Rates",
+					"item": [
+						{
+							"name": "List Tax Rates",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/tax-rates", "host": ["{{baseUrl}}"], "path": ["admin", "tax-rates"] },
+								"description": "List all tax rates by country."
+							}
+						},
+						{
+							"name": "Create Tax Rate",
+							"request": {
+								"method": "POST",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"country_code\": \"US\",\n  \"rate\": 0.18,\n  \"tax_name\": \"Sales Tax\"\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/tax-rates", "host": ["{{baseUrl}}"], "path": ["admin", "tax-rates"] },
+								"description": "Create a new tax rate for a country. Country code is ISO 3166-1 alpha-2."
+							}
+						},
+						{
+							"name": "Update Tax Rate",
+							"request": {
+								"method": "PATCH",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"rate\": 0.20,\n  \"active\": true\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/tax-rates/US", "host": ["{{baseUrl}}"], "path": ["admin", "tax-rates", "US"] },
+								"description": "Update a tax rate by country code."
+							}
+						}
+					]
+				},
+				{
+					"name": "Audit Logs",
+					"item": [
+						{
+							"name": "List Audit Logs",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/audit-logs?page=1&per_page=20", "host": ["{{baseUrl}}"], "path": ["admin", "audit-logs"], "query": [{ "key": "page", "value": "1" }, { "key": "per_page", "value": "20" }, { "key": "action", "value": "", "disabled": true }, { "key": "admin_id", "value": "", "disabled": true }] },
+								"description": "List audit logs with pagination. Filters: action, admin_id, date range."
+							}
+						},
+						{
+							"name": "Get Audit Log",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/audit-logs/{{userId}}", "host": ["{{baseUrl}}"], "path": ["admin", "audit-logs", "{{userId}}"] },
+								"description": "Get a single audit log entry by ID."
+							}
+						}
+					]
+				},
+				{
+					"name": "Billing Events",
+					"item": [
+						{
+							"name": "List Billing Events",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/billing-events?page=1&per_page=20", "host": ["{{baseUrl}}"], "path": ["admin", "billing-events"], "query": [{ "key": "page", "value": "1" }, { "key": "per_page", "value": "20" }, { "key": "event_type", "value": "", "disabled": true }, { "key": "workspace_id", "value": "", "disabled": true }] },
+								"description": "List billing events with pagination. Filters: event_type, workspace_id."
+							}
+						}
+					]
+				},
+				{
+					"name": "Admin Management",
+					"item": [
+						{
+							"name": "List Admins",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/admins", "host": ["{{baseUrl}}"], "path": ["admin", "admins"] },
+								"description": "List all admin users."
+							}
+						},
+						{
+							"name": "Demote Admin",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/admins/{{userId}}", "host": ["{{baseUrl}}"], "path": ["admin", "admins", "{{userId}}"] },
+								"description": "Demote an admin to regular user. Returns 204 No Content."
+							}
+						},
+						{
+							"name": "Create Admin Invite",
+							"event": [{ "listen": "test", "script": { "exec": ["var jsonData = pm.response.json();", "// The actual token is logged server-side for dev use"] } }],
+							"request": {
+								"method": "POST",
+								"header": [{ "key": "Content-Type", "value": "application/json" }],
+								"body": { "mode": "raw", "raw": "{\n  \"email\": \"newadmin@example.com\"\n}" },
+								"url": { "raw": "{{baseUrl}}/admin/invites", "host": ["{{baseUrl}}"], "path": ["admin", "invites"] },
+								"description": "Create an admin invite. Max 5 pending invites. Token expires in 24h. Invite email sent."
+							}
+						}
+					]
+				},
+				{
+					"name": "Stats",
+					"item": [
+						{
+							"name": "Overview Stats",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/stats/overview", "host": ["{{baseUrl}}"], "path": ["admin", "stats", "overview"] },
+								"description": "Get platform overview statistics (total users, workspaces, subscriptions, etc.)."
+							}
+						},
+						{
+							"name": "Referral Analytics",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{baseUrl}}/admin/stats/referrals", "host": ["{{baseUrl}}"], "path": ["admin", "stats", "referrals"] },
+								"description": "Get detailed referral analytics."
+							}
+						}
+					]
+				}
+			]
+		}
+	]
 }

@@ -11,7 +11,7 @@ use std::sync::Arc;
 const ALLOWED_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 
 /// Allowed headers for CORS responses.
-const ALLOWED_HEADERS: &str = "Authorization, Content-Type, X-Trace-Id";
+const ALLOWED_HEADERS: &str = "Authorization, Content-Type, X-Trace-Id, X-Workspace-ID";
 
 /// CORS middleware that checks the `Origin` header against a configured allow-list.
 ///

@@ -157,6 +157,50 @@ async fn apply_subscription_transition(
             .execute(pool)
             .await
             .map_err(|_| AppError::InternalError)?;
+
+            // Mark any pending transaction as completed
+            if let Some(ref ext_sub_id) = payload.external_subscription_id {
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE transactions
+                    SET status = 'completed',
+                        external_subscription_id = $1,
+                        completed_at = now(),
+                        updated_at = now()
+                    WHERE workspace_id = $2 AND status = 'created'
+                    "#,
+                )
+                .bind(ext_sub_id)
+                .bind(workspace_id)
+                .execute(pool)
+                .await;
+            } else {
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE transactions
+                    SET status = 'completed',
+                        completed_at = now(),
+                        updated_at = now()
+                    WHERE workspace_id = $1 AND status = 'created'
+                    "#,
+                )
+                .bind(workspace_id)
+                .execute(pool)
+                .await;
+            }
+
+            // Convert pending referral → award +1 month to both users
+            let owner_id: Option<Uuid> = sqlx::query_scalar(
+                "SELECT owner_id FROM workspaces WHERE id = $1",
+            )
+            .bind(workspace_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+            if let Some(user_id) = owner_id {
+                let _ = crate::auth::service::AuthService::convert_referral(pool, user_id).await;
+            }
         }
         "subscription.renewed" => {
             // Extend period_end by 12 months, ensure status=active.
@@ -208,6 +252,18 @@ async fn apply_subscription_transition(
             .execute(pool)
             .await
             .map_err(|_| AppError::InternalError)?;
+
+            // Mark any pending transactions as cancelled
+            let _ = sqlx::query(
+                r#"
+                UPDATE transactions
+                SET status = 'cancelled', updated_at = now()
+                WHERE workspace_id = $1 AND status = 'created'
+                "#,
+            )
+            .bind(workspace_id)
+            .execute(pool)
+            .await;
         }
         "subscription.reactivated" => {
             // Set status=active, clear cancelled_at and grace_period_end.

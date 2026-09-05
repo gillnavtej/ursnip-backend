@@ -52,6 +52,9 @@ async fn main() {
         });
     info!("Database migrations complete");
 
+    // ── 3b. Seed admin password (hash placeholder if still present) ─────────
+    seed_admin_password(&pool, &config).await;
+
     // ── 4. Initialize all services ──────────────────────────────────────────
     let session_registry = Arc::new(SessionRegistry::new(config.ws_max_connections));
 
@@ -113,6 +116,90 @@ async fn main() {
     });
 
     info!("shutdown complete");
+}
+
+/// Seed (or update) the super-admin user's email and password hash.
+///
+/// On every startup, checks if the admin user's `password_hash` is still the
+/// migration placeholder (`PLACEHOLDER_REQUIRES_APP_INIT`). If so, hashes the
+/// configured `SEED_ADMIN_PASSWORD` and updates the record. Also updates the
+/// email to match `SEED_ADMIN_EMAIL` in case it changed.
+/// Additionally ensures the admin has an individual workspace.
+async fn seed_admin_password(pool: &sqlx::PgPool, config: &AppConfig) {
+    use ursnip_backend::auth::password::hash_password;
+
+    // Check if any admin user still has the placeholder hash
+    let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT id, password_hash FROM users WHERE role = 'admin' AND password_hash = 'PLACEHOLDER_REQUIRES_APP_INIT' LIMIT 1"
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap_or_else(|e| {
+        warn!("Failed to check admin seed state: {}", e);
+        None
+    });
+
+    if let Some((user_id, _)) = row {
+        let hashed = hash_password(&config.seed_admin_password)
+            .unwrap_or_else(|_| {
+                error!("FATAL: failed to hash SEED_ADMIN_PASSWORD");
+                std::process::exit(1);
+            });
+
+        sqlx::query(
+            "UPDATE users SET password_hash = $1, email = $2 WHERE id = $3"
+        )
+        .bind(&hashed)
+        .bind(&config.seed_admin_email)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .unwrap_or_else(|e| {
+            error!("FATAL: failed to seed admin password: {}", e);
+            std::process::exit(1);
+        });
+
+        // Ensure admin has an individual workspace
+        let has_workspace: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE owner_id = $1 AND type = 'individual')"
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false);
+
+        if !has_workspace {
+            let workspace_id: uuid::Uuid = sqlx::query_scalar(
+                "INSERT INTO workspaces (type, owner_id, name) VALUES ('individual', $1, 'Admin Workspace') RETURNING id"
+            )
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|e| {
+                error!("FATAL: failed to create admin workspace: {}", e);
+                std::process::exit(1);
+            });
+
+            let _ = sqlx::query(
+                "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'owner')"
+            )
+            .bind(workspace_id)
+            .bind(user_id)
+            .execute(pool)
+            .await;
+
+            let _ = sqlx::query(
+                "INSERT INTO subscriptions (workspace_id, tier, status) VALUES ($1, 'pro', 'active')"
+            )
+            .bind(workspace_id)
+            .execute(pool)
+            .await;
+
+            info!("Created individual workspace for admin user");
+        }
+
+        info!("Admin user seeded with configured SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD");
+    }
 }
 
 /// Graceful shutdown handler.

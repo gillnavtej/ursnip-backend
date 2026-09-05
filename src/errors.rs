@@ -36,6 +36,12 @@ pub enum AppError {
     PasswordResetRequired,
     #[error("Not a workspace member")]
     NotAWorkspaceMember,
+    #[error("Teams plan required")]
+    TeamsPlanRequired,
+    #[error("Not the account owner")]
+    NotAccountOwner,
+    #[error("Resource access denied")]
+    ResourceAccessDenied,
 
     // Payment required (402)
     #[error("Subscription required")]
@@ -60,6 +66,8 @@ pub enum AppError {
     EmailAlreadyRegistered,
     #[error("Trigger already exists")]
     TriggerAlreadyExists,
+    #[error("Trigger conflicts with an existing trigger (prefix collision)")]
+    TriggerPrefixConflict,
     #[error("Snapshot required")]
     SnapshotRequired,
     #[error("Account linking conflict")]
@@ -80,8 +88,16 @@ pub enum AppError {
     InvalidResetToken,
     #[error("Email verification required")]
     EmailVerificationRequired,
+    #[error("Invalid verification code")]
+    InvalidOtp,
+    #[error("Verification code expired")]
+    OtpExpired,
+    #[error("Too many verification attempts")]
+    OtpAttemptsExceeded,
     #[error("Invite expired")]
     InviteExpired,
+    #[error("Collaborator invite invalid")]
+    CollaboratorInviteInvalid,
     #[error("Transfer ownership required")]
     TransferOwnershipRequired,
     #[error("Already upgraded")]
@@ -233,7 +249,10 @@ impl AppError {
             | Self::ClientTypeNotAllowed
             | Self::AccountSuspended
             | Self::PasswordResetRequired
-            | Self::NotAWorkspaceMember => StatusCode::FORBIDDEN,
+            | Self::NotAWorkspaceMember
+            | Self::TeamsPlanRequired
+            | Self::NotAccountOwner
+            | Self::ResourceAccessDenied => StatusCode::FORBIDDEN,
 
             // 404
             Self::UserNotFound
@@ -246,6 +265,7 @@ impl AppError {
             // 409
             Self::EmailAlreadyRegistered
             | Self::TriggerAlreadyExists
+            | Self::TriggerPrefixConflict
             | Self::SnapshotRequired
             | Self::AccountLinkingConflict
             | Self::CouponCodeAlreadyExists
@@ -260,7 +280,11 @@ impl AppError {
             | Self::PasswordTooShort
             | Self::InvalidResetToken
             | Self::EmailVerificationRequired
+            | Self::InvalidOtp
+            | Self::OtpExpired
+            | Self::OtpAttemptsExceeded
             | Self::InviteExpired
+            | Self::CollaboratorInviteInvalid
             | Self::TransferOwnershipRequired
             | Self::AlreadyUpgraded
             | Self::SeatLimitReached
@@ -335,6 +359,9 @@ impl AppError {
             Self::AccountSuspended => "ACCOUNT_SUSPENDED",
             Self::PasswordResetRequired => "PASSWORD_RESET_REQUIRED",
             Self::NotAWorkspaceMember => "NOT_A_WORKSPACE_MEMBER",
+            Self::TeamsPlanRequired => "TEAMS_PLAN_REQUIRED",
+            Self::NotAccountOwner => "NOT_ACCOUNT_OWNER",
+            Self::ResourceAccessDenied => "RESOURCE_ACCESS_DENIED",
 
             // 402
             Self::SubscriptionRequired => "SUBSCRIPTION_REQUIRED",
@@ -350,6 +377,7 @@ impl AppError {
             // 409
             Self::EmailAlreadyRegistered => "EMAIL_ALREADY_REGISTERED",
             Self::TriggerAlreadyExists => "TRIGGER_ALREADY_EXISTS",
+            Self::TriggerPrefixConflict => "TRIGGER_PREFIX_CONFLICT",
             Self::SnapshotRequired => "SNAPSHOT_REQUIRED",
             Self::AccountLinkingConflict => "ACCOUNT_LINKING_CONFLICT",
             Self::CouponCodeAlreadyExists => "COUPON_CODE_ALREADY_EXISTS",
@@ -361,7 +389,11 @@ impl AppError {
             Self::PasswordTooShort => "PASSWORD_TOO_SHORT",
             Self::InvalidResetToken => "INVALID_RESET_TOKEN",
             Self::EmailVerificationRequired => "EMAIL_VERIFICATION_REQUIRED",
+            Self::InvalidOtp => "INVALID_OTP",
+            Self::OtpExpired => "OTP_EXPIRED",
+            Self::OtpAttemptsExceeded => "OTP_ATTEMPTS_EXCEEDED",
             Self::InviteExpired => "INVITE_EXPIRED",
+            Self::CollaboratorInviteInvalid => "COLLABORATOR_INVITE_INVALID",
             Self::TransferOwnershipRequired => "TRANSFER_OWNERSHIP_REQUIRED",
             Self::AlreadyUpgraded => "ALREADY_UPGRADED",
             Self::SeatLimitReached => "SEAT_LIMIT_REACHED",

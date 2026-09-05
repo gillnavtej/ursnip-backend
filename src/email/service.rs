@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio::time::Duration;
-use tracing::error;
+use tracing::{debug, error, info, warn};
 
 use crate::config::{AppConfig, EmailProviderType};
 
@@ -49,6 +49,12 @@ impl EmailService {
     pub fn send_email(&self, message: EmailMessage) {
         let provider = Arc::clone(&self.provider);
         let _config = Arc::clone(&self.config);
+
+        info!(
+            to = %message.to,
+            subject = %message.subject,
+            "Email queued for background delivery"
+        );
 
         tokio::spawn(async move {
             send_with_retry(&provider, &message).await;

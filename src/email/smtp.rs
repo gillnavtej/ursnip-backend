@@ -6,6 +6,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 
+use tracing::{debug, error, info};
 use crate::config::AppConfig;
 
 use super::service::{EmailMessage, EmailProvider};
@@ -13,6 +14,8 @@ use super::service::{EmailMessage, EmailProvider};
 /// SMTP-based email provider using `lettre` with TLS support.
 pub struct SmtpProvider {
     transport: AsyncSmtpTransport<Tokio1Executor>,
+    host: String,
+    port: u16,
     from_address: String,
     from_name: String,
 }
@@ -41,6 +44,8 @@ impl SmtpProvider {
 
         let credentials = Credentials::new(user.to_string(), password.to_string());
 
+        let tls_mode = if port == 465 { "implicit TLS (SMTPS)" } else { "STARTTLS" };
+
         let transport = if port == 465 {
             // Port 465: implicit TLS (SMTPS)
             AsyncSmtpTransport::<Tokio1Executor>::relay(host)
@@ -57,8 +62,19 @@ impl SmtpProvider {
                 .build()
         };
 
+        info!(
+            host = %host,
+            port = port,
+            tls = tls_mode,
+            user = %user,
+            from = %config.email_from_address,
+            "SMTP email provider initialized"
+        );
+
         Self {
             transport,
+            host: host.to_string(),
+            port,
             from_address: config.email_from_address.clone(),
             from_name: config.email_from_name.clone(),
         }
@@ -71,14 +87,28 @@ impl EmailProvider for SmtpProvider {
         &self,
         message: &EmailMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        debug!(
+            to = %message.to,
+            subject = %message.subject,
+            host = %self.host,
+            port = self.port,
+            "Building SMTP message"
+        );
+
         let from = format!("{} <{}>", self.from_name, self.from_address)
             .parse()
-            .map_err(|e| format!("Invalid from address: {}", e))?;
+            .map_err(|e| {
+                error!(from = %self.from_address, error = %e, "Invalid SMTP from address");
+                format!("Invalid from address: {}", e)
+            })?;
 
         let to = message
             .to
             .parse()
-            .map_err(|e| format!("Invalid to address: {}", e))?;
+            .map_err(|e| {
+                error!(to = %message.to, error = %e, "Invalid SMTP recipient address");
+                format!("Invalid to address: {}", e)
+            })?;
 
         let email = Message::builder()
             .from(from)
@@ -96,9 +126,43 @@ impl EmailProvider for SmtpProvider {
                             .header(ContentType::TEXT_HTML)
                             .body(message.html_body.clone()),
                     ),
-            )?;
+            )
+            .map_err(|e| {
+                error!(error = %e, "Failed to build SMTP MIME message");
+                e
+            })?;
 
-        self.transport.send(email).await?;
-        Ok(())
+        info!(
+            to = %message.to,
+            subject = %message.subject,
+            host = %self.host,
+            port = self.port,
+            "Connecting to SMTP server and sending email"
+        );
+
+        match self.transport.send(email).await {
+            Ok(response) => {
+                info!(
+                    to = %message.to,
+                    host = %self.host,
+                    port = self.port,
+                    smtp_code = ?response.code(),
+                    smtp_message = ?response.message().collect::<Vec<_>>(),
+                    "SMTP server accepted the email"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    to = %message.to,
+                    host = %self.host,
+                    port = self.port,
+                    error = %e,
+                    error_debug = ?e,
+                    "SMTP send failed (check credentials, TLS/port, verified sender domain, and firewall)"
+                );
+                Err(Box::new(e))
+            }
+        }
     }
 }

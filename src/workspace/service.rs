@@ -55,6 +55,13 @@ pub struct WorkspaceService {
     pool: PgPool,
 }
 
+/// Maximum workspaces per user (free tier).
+const FREE_TIER_MAX_WORKSPACES: i64 = 1;
+/// Maximum workspaces per user (pro tier).
+const PRO_TIER_MAX_WORKSPACES: i64 = 3;
+/// Maximum workspaces per user (teams tier — effectively unlimited).
+const TEAMS_TIER_MAX_WORKSPACES: i64 = 50;
+
 impl WorkspaceService {
     /// Create a new WorkspaceService instance.
     pub fn new(pool: PgPool) -> Self {
@@ -140,6 +147,40 @@ impl WorkspaceService {
         owner_id: Uuid,
         name: &str,
     ) -> Result<WorkspaceResponse, AppError> {
+        // Enforce workspace count limit based on user's highest tier
+        let workspace_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workspaces WHERE owner_id = $1",
+        )
+        .bind(owner_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // Get user's best subscription tier across all workspaces
+        let tier: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT s.tier FROM subscriptions s
+            INNER JOIN workspaces w ON w.id = s.workspace_id
+            WHERE w.owner_id = $1 AND s.status IN ('active', 'past_due')
+            ORDER BY CASE s.tier WHEN 'teams' THEN 3 WHEN 'pro' THEN 2 ELSE 1 END DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(owner_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let max_workspaces = match tier.as_deref() {
+            Some("teams") => TEAMS_TIER_MAX_WORKSPACES,
+            Some("pro") => PRO_TIER_MAX_WORKSPACES,
+            _ => FREE_TIER_MAX_WORKSPACES,
+        };
+
+        if workspace_count >= max_workspaces {
+            return Err(AppError::SeatLimitReached);
+        }
+
         let mut tx = self
             .pool
             .begin()
@@ -264,6 +305,124 @@ impl WorkspaceService {
         Ok(workspaces)
     }
 
+    /// Update a workspace's name.
+    ///
+    /// Only updates provided fields (name for now).
+    pub async fn update_workspace(
+        &self,
+        workspace_id: Uuid,
+        name: Option<String>,
+    ) -> Result<WorkspaceResponse, AppError> {
+        // Build update query dynamically (only name for now)
+        let new_name = match name {
+            Some(ref n) if !n.is_empty() => n.as_str(),
+            _ => {
+                // Nothing to update, just return current state
+                return self.get_workspace(workspace_id).await;
+            }
+        };
+
+        let row = sqlx::query_as::<_, WorkspaceRow>(
+            r#"
+            UPDATE workspaces SET name = $1, updated_at = now()
+            WHERE id = $2
+            RETURNING id, type, owner_id, name, created_at
+            "#,
+        )
+        .bind(new_name)
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let row = row.ok_or(AppError::WorkspaceNotFound)?;
+
+        Ok(WorkspaceResponse {
+            id: row.id,
+            workspace_type: row.workspace_type,
+            owner_id: row.owner_id,
+            name: row.name,
+            created_at: row.created_at,
+        })
+    }
+
+    /// Delete a workspace and all related data.
+    ///
+    /// Cannot delete individual workspaces (they are tied to the user account).
+    /// Deletes: workspace_members, subscriptions, snippets, folders, sync_deltas, team_invites.
+    pub async fn delete_workspace(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<(), AppError> {
+        // Check workspace exists and is not individual
+        let row = sqlx::query_as::<_, WorkspaceRow>(
+            "SELECT id, type, owner_id, name, created_at FROM workspaces WHERE id = $1",
+        )
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let row = row.ok_or(AppError::WorkspaceNotFound)?;
+
+        if row.workspace_type == "individual" {
+            return Err(AppError::CannotDeleteIndividualWorkspace);
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        // Delete related data in dependency order
+        sqlx::query("DELETE FROM sync_deltas WHERE workspace_id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("DELETE FROM snippets WHERE workspace_id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("DELETE FROM folders WHERE workspace_id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("DELETE FROM team_invites WHERE workspace_id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("DELETE FROM subscriptions WHERE workspace_id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("DELETE FROM workspace_members WHERE workspace_id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("DELETE FROM workspaces WHERE id = $1")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        tx.commit().await.map_err(|_| AppError::InternalError)?;
+
+        Ok(())
+    }
+
     /// Verify that a user is a member of a workspace.
     ///
     /// Returns Ok(()) if the user is a member, or NotAWorkspaceMember (403) if not.
@@ -331,6 +490,10 @@ struct TeamInviteRow {
     pub times_used: i32,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    #[sqlx(default)]
+    pub invited_role: Option<String>,
+    #[sqlx(default)]
+    pub invited_permissions: Option<serde_json::Value>,
 }
 
 // ─── Team Service ───────────────────────────────────────────────────────────────
@@ -373,6 +536,8 @@ impl TeamService {
         created_by: Uuid,
         max_uses: Option<i32>,
         expires_in_days: Option<i64>,
+        invited_role: Option<&str>,
+        invited_permissions: Option<&[String]>,
     ) -> Result<TeamInviteResponse, AppError> {
         // Verify workspace exists
         let workspace_exists: bool = sqlx::query_scalar(
@@ -391,11 +556,14 @@ impl TeamService {
         let effective_max_uses = max_uses.unwrap_or(1);
         let effective_expires_in_days = expires_in_days.unwrap_or(7);
         let expires_at = Utc::now() + Duration::days(effective_expires_in_days);
+        let role = invited_role.unwrap_or("editor");
+        let perms_json: Option<serde_json::Value> = invited_permissions
+            .map(|p| serde_json::to_value(p).unwrap_or(serde_json::json!([])));
 
         let row = sqlx::query_as::<_, TeamInviteRow>(
             r#"
-            INSERT INTO team_invites (workspace_id, invite_code, max_uses, expires_at, created_by)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO team_invites (workspace_id, invite_code, max_uses, expires_at, created_by, invited_role, invited_permissions)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id, workspace_id, invite_code, max_uses, times_used, expires_at, created_at
             "#,
         )
@@ -404,6 +572,8 @@ impl TeamService {
         .bind(effective_max_uses)
         .bind(expires_at)
         .bind(created_by)
+        .bind(role)
+        .bind(&perms_json)
         .fetch_one(&self.pool)
         .await
         .map_err(|_| AppError::InternalError)?;
@@ -445,7 +615,7 @@ impl TeamService {
         // Fetch the invite by code
         let invite = sqlx::query_as::<_, TeamInviteRow>(
             r#"
-            SELECT id, workspace_id, invite_code, max_uses, times_used, expires_at, created_at
+            SELECT id, workspace_id, invite_code, max_uses, times_used, expires_at, created_at, invited_role, invited_permissions
             FROM team_invites
             WHERE invite_code = $1
             "#,
@@ -467,7 +637,7 @@ impl TeamService {
             return Err(AppError::InviteExpired);
         }
 
-        // Check seat limit (max 3 members including owner)
+        // Check seat limit (dynamic — uses max_seats from subscription)
         let member_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = $1",
         )
@@ -476,7 +646,16 @@ impl TeamService {
         .await
         .map_err(|_| AppError::InternalError)?;
 
-        if member_count >= MAX_TEAM_SEATS {
+        let max_seats: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(max_seats, 3) FROM subscriptions WHERE workspace_id = $1",
+        )
+        .bind(invite.workspace_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppError::InternalError)?
+        .unwrap_or(MAX_TEAM_SEATS);
+
+        if member_count >= max_seats {
             return Err(AppError::SeatLimitReached);
         }
 
@@ -494,16 +673,19 @@ impl TeamService {
             return Err(AppError::AlreadyAMember);
         }
 
-        // Add membership
+        // Add membership with role and permissions from the invite
+        let assigned_role = invite.invited_role.as_deref().unwrap_or("editor");
         let member_row = sqlx::query_as::<_, WorkspaceMemberRow>(
             r#"
-            INSERT INTO workspace_members (workspace_id, user_id, role)
-            VALUES ($1, $2, 'member')
+            INSERT INTO workspace_members (workspace_id, user_id, role, permissions)
+            VALUES ($1, $2, $3, $4)
             RETURNING workspace_id, user_id, role, joined_at
             "#,
         )
         .bind(invite.workspace_id)
         .bind(user_id)
+        .bind(assigned_role)
+        .bind(&invite.invited_permissions)
         .fetch_one(&mut *tx)
         .await
         .map_err(|_| AppError::InternalError)?;

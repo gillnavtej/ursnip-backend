@@ -17,14 +17,14 @@ use crate::subscription::invoice::{compute_invoice, Invoice, InvoiceRequest};
 /// Free tier limits (Requirement 5.21).
 const FREE_MAX_SNIPPETS: i64 = 10;
 const FREE_MAX_FOLDERS: i64 = 3;
-const FREE_MAX_CONTENT_CHARS: usize = 2000;
+const FREE_MAX_CONTENT_CHARS: usize = 10000;
 
 /// Minimum billing cycle in months (Requirement 5.26).
 const MINIMUM_BILLING_CYCLE_MONTHS: i32 = 12;
 
 /// Base prices per tier (annual).
-const PRO_BASE_PRICE: &str = "99.00";
-const TEAMS_BASE_PRICE: &str = "199.00";
+const PRO_BASE_PRICE: &str = "48.00";
+const TEAMS_BASE_PRICE: &str = "84.00";
 
 // ─── Internal Row Types ─────────────────────────────────────────────────────────
 
@@ -98,6 +98,7 @@ pub struct CheckoutRequest {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CheckoutResponse {
     pub checkout_url: String,
+    pub transaction_id: String,
     pub invoice: Invoice,
 }
 
@@ -180,7 +181,7 @@ impl SubscriptionService {
 
     /// Enforce tier limits for a workspace.
     ///
-    /// For free tier: max 10 snippets, max 3 folders, max 2000 chars content.
+    /// For free tier: max 10 snippets, max 3 folders, max 10000 chars content.
     /// For pro/teams: no limits (Requirement 5.21, 5.23).
     ///
     /// `content_length` is provided when creating/updating a snippet to validate
@@ -511,18 +512,22 @@ impl SubscriptionService {
 
         let invoice = compute_invoice(&self.pool, &invoice_request).await?;
 
-        // Step 6: Within transaction — update subscription and increment coupon times_used
+        // Step 6: Within transaction — handle tier-specific logic
         let mut tx = self.pool.begin().await.map_err(|_| AppError::InternalError)?;
 
-        // Update subscription to pending_payment
+        // Update the workspace-scoped subscription for the selected tier.
+        // Teams gets more seats than Pro, but both are now workspace-scoped
+        // (the organization layer was removed).
+        let max_seats: i32 = if request.tier == "teams" { 3 } else { 1 };
         sqlx::query(
             r#"
             UPDATE subscriptions
-            SET tier = $1, status = 'pending_payment', updated_at = now()
-            WHERE workspace_id = $2
+            SET tier = $1, status = 'pending_payment', max_seats = $2, updated_at = now()
+            WHERE workspace_id = $3
             "#,
         )
         .bind(&request.tier)
+        .bind(max_seats)
         .bind(request.workspace_id)
         .execute(&mut *tx)
         .await
@@ -559,6 +564,59 @@ impl SubscriptionService {
             crate::subscription::paddle::create_checkout_transaction(&self.config, paddle_params)
                 .await?;
 
+        // Record the transaction for tracking and audit
+        let owner_id: Uuid = sqlx::query_scalar(
+            "SELECT owner_id FROM workspaces WHERE id = $1",
+        )
+        .bind(request.workspace_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO transactions (
+                workspace_id, user_id, external_transaction_id,
+                tier, billing_cycle_months,
+                base_price, discount_amount, tax_amount, total_amount, currency,
+                status
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'created')
+            ON CONFLICT (external_transaction_id) DO NOTHING
+            "#,
+        )
+        .bind(request.workspace_id)
+        .bind(owner_id)
+        .bind(&paddle_result.transaction_id)
+        .bind(&request.tier)
+        .bind(request.billing_cycle_months)
+        .bind(invoice.base_price)
+        .bind(invoice.discount_amount)
+        .bind(invoice.tax_amount)
+        .bind(invoice.total_amount)
+        .bind(&invoice.currency)
+        .execute(&self.pool)
+        .await;
+
+        // Also record in billing_events log
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO billing_events (external_event_id, event_type, workspace_id, payload)
+            VALUES ($1, 'transaction.created', $2, $3)
+            ON CONFLICT (external_event_id) DO NOTHING
+            "#,
+        )
+        .bind(&paddle_result.transaction_id)
+        .bind(request.workspace_id)
+        .bind(serde_json::json!({
+            "transaction_id": paddle_result.transaction_id,
+            "tier": request.tier,
+            "total_amount": invoice.total_amount.to_string(),
+            "currency": invoice.currency,
+        }))
+        .execute(&self.pool)
+        .await;
+
         let mut checkout_url = paddle_result.checkout_url;
 
         // Append cancel_url as a query parameter if provided
@@ -577,6 +635,7 @@ impl SubscriptionService {
 
         Ok(CheckoutResponse {
             checkout_url,
+            transaction_id: paddle_result.transaction_id,
             invoice,
         })
     }

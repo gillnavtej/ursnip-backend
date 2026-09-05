@@ -12,9 +12,33 @@ use uuid::Uuid;
 use crate::auth::jwt::encode_access_token;
 use crate::auth::password::{hash_password, verify_password};
 use crate::config::AppConfig;
-use crate::errors::AppError;
+use crate::email::{templates, EmailService};
+use crate::errors::{AppError, FieldError};
 use crate::middleware::auth_extractor::AccessTokenClaims;
 use crate::models::common::{ClientType, Role, Tier};
+
+pub const DEFAULT_DATE_FORMAT: &str = "dd-MM-yyyy";
+pub const SUPPORTED_DATE_FORMATS: [&str; 6] = [
+    "dd-MM-yyyy",
+    "MM-dd-yyyy",
+    "yyyy-MM-dd",
+    "dd/MM/yyyy",
+    "MM/dd/yyyy",
+    "yyyy/MM/dd",
+];
+
+fn validate_date_format(date_format: &str) -> Result<(), AppError> {
+    if SUPPORTED_DATE_FORMATS.contains(&date_format) {
+        return Ok(());
+    }
+
+    Err(AppError::ValidationError {
+        details: vec![FieldError {
+            field: "date_format".into(),
+            message: format!("Must be one of: {}", SUPPORTED_DATE_FORMATS.join(", ")),
+        }],
+    })
+}
 
 // ─── Profile & Account Management DTOs ──────────────────────────────────────────
 
@@ -29,6 +53,7 @@ pub struct UpdateProfileRequest {
     pub language: Option<String>,
     pub country_code: Option<String>,
     pub phone: Option<String>,
+    pub date_format: Option<String>,
 }
 
 /// Response payload for profile operations.
@@ -43,6 +68,7 @@ pub struct ProfileResponse {
     pub language: Option<String>,
     pub country_code: Option<String>,
     pub phone: Option<String>,
+    pub date_format: String,
     pub role: Role,
     pub referral_code: String,
     pub created_at: DateTime<Utc>,
@@ -105,6 +131,24 @@ pub struct UserInfo {
     pub role: Role,
     pub referral_code: String,
     pub workspace_id: Uuid,
+}
+
+/// Response returned by `register`. No session credentials are issued at
+/// registration; the client must complete email-OTP verification.
+#[derive(Debug, Serialize)]
+pub struct RegisterResponse {
+    /// Always `true` for the email/password signup flow.
+    pub verification_required: bool,
+    /// The email address the verification code was sent to (for display).
+    pub email: String,
+}
+
+/// Request payload for verifying a signup OTP.
+#[derive(Debug, Deserialize)]
+pub struct VerifyOtpRequest {
+    pub email: String,
+    pub code: String,
+    pub client_type: ClientType,
 }
 
 /// Refresh token request payload.
@@ -175,6 +219,7 @@ struct UserRow {
     pub deleted_at: Option<DateTime<Utc>>,
     pub referral_code: String,
     pub must_reset_password: bool,
+    pub email_verified: bool,
 }
 
 /// Request payload for creating an admin invite.
@@ -224,6 +269,24 @@ struct PasswordResetTokenRow {
     pub used: bool,
 }
 
+/// Internal row type for OTP code lookup during verification.
+#[derive(Debug, sqlx::FromRow)]
+struct OtpCodeRow {
+    pub id: Uuid,
+    pub code_hash: String,
+    pub attempts: i32,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Internal row type for user lookup during OTP verification.
+#[derive(Debug, sqlx::FromRow)]
+struct OtpUserRow {
+    pub id: Uuid,
+    pub email: String,
+    pub referral_code: String,
+    pub email_verified: bool,
+}
+
 // ─── Brute-force tracking ────────────────────────────────────────────────────
 
 /// In-memory state for tracking failed login attempts per email.
@@ -252,12 +315,24 @@ const MAX_SESSIONS: i64 = 5;
 /// Maximum pending (unused, unexpired) admin invites at any time.
 const MAX_PENDING_ADMIN_INVITES: i64 = 5;
 
+/// Signup OTP validity window in minutes.
+const OTP_TTL_MINUTES: i64 = 10;
+
+/// Maximum verification attempts allowed against a single OTP before it is
+/// rejected and a resend is required.
+const OTP_MAX_ATTEMPTS: i32 = 5;
+
+/// Minimum number of seconds between OTP resends for a given user.
+const OTP_RESEND_COOLDOWN_SECS: i64 = 30;
+
 // ─── Service ────────────────────────────────────────────────────────────────────
 
 /// Authentication service handling registration and login flows.
 pub struct AuthService {
     pool: PgPool,
     config: Arc<AppConfig>,
+    /// Email delivery service for transactional emails (password reset, etc.).
+    email_service: EmailService,
     /// In-memory brute-force attempt tracker. Key: email, Value: BruteForceEntry.
     failed_attempts: DashMap<String, BruteForceEntry>,
 }
@@ -265,9 +340,11 @@ pub struct AuthService {
 impl AuthService {
     /// Create a new AuthService instance.
     pub fn new(pool: PgPool, config: Arc<AppConfig>) -> Self {
+        let email_service = EmailService::new(config.clone());
         Self {
             pool,
             config,
+            email_service,
             failed_attempts: DashMap::new(),
         }
     }
@@ -282,8 +359,12 @@ impl AuthService {
     /// 5. Persist user with role=user
     /// 6. Create individual workspace + free subscription
     /// 7. Handle optional referral code
-    /// 8. Generate token pair (access + refresh)
-    pub async fn register(&self, req: RegisterRequest) -> Result<AuthResponse, AppError> {
+    /// 8. Generate and email a signup verification OTP (no tokens issued here)
+    ///
+    /// The account is created with `email_verified = false` and NO session
+    /// credentials are returned. The user must verify the emailed OTP via
+    /// [`verify_otp`](Self::verify_otp) to obtain tokens.
+    pub async fn register(&self, req: RegisterRequest) -> Result<RegisterResponse, AppError> {
         // 1. Validate password length
         if req.password.len() < 8 {
             return Err(AppError::PasswordTooShort);
@@ -315,11 +396,13 @@ impl AuthService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-        // 5. Insert user with role=user (blocks admin creation)
+        // 5. Insert user with role=user (blocks admin creation).
+        //    email_verified is explicitly false: the account is created unverified
+        //    and must complete email-OTP verification before any tokens are issued.
         let user_id: Uuid = sqlx::query_scalar(
             r#"
-            INSERT INTO users (email, password_hash, role, status, referral_code, first_name, last_name)
-            VALUES ($1, $2, 'user', 'active', $3, $4, $5)
+            INSERT INTO users (email, password_hash, role, status, referral_code, first_name, last_name, email_verified)
+            VALUES ($1, $2, 'user', 'active', $3, $4, $5, false)
             RETURNING id
             "#,
         )
@@ -385,7 +468,177 @@ impl AuthService {
             self.handle_referral(code, user_id, &mut tx).await?;
         }
 
-        // 8. Generate refresh token
+        // Commit transaction. The account is now fully provisioned but unverified;
+        // no session credentials (refresh/access tokens) are issued at this stage.
+        tx.commit().await.map_err(|_| AppError::InternalError)?;
+
+        // Generate and dispatch a signup verification OTP. The user must verify
+        // the emailed code (via verify_otp) before any tokens are issued.
+        self.issue_signup_otp(user_id, &req.email).await?;
+
+        tracing::info!(
+            user_id = %user_id,
+            email = %req.email,
+            "Registration succeeded — account created unverified, signup OTP dispatched"
+        );
+
+        Ok(RegisterResponse {
+            verification_required: true,
+            email: req.email,
+        })
+    }
+
+    /// Generate a signup verification OTP for a user and email it.
+    ///
+    /// Invalidates any prior unused OTP codes for the user, stores only the hash
+    /// of a fresh 6-digit code with a 10-minute TTL, and dispatches the code via
+    /// the non-blocking email path. The plaintext code is never logged.
+    async fn issue_signup_otp(&self, user_id: Uuid, email: &str) -> Result<(), AppError> {
+        let code = generate_otp_code();
+        let code_hash = hash_token(&code);
+        let expires_at = Utc::now() + Duration::minutes(OTP_TTL_MINUTES);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        // Invalidate any previously issued (unused) codes for this user so that
+        // at most one active code exists at a time.
+        sqlx::query("UPDATE otp_codes SET used = true WHERE user_id = $1 AND used = false")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        // Store the hash of the new code with a 10-minute TTL.
+        sqlx::query(
+            r#"
+            INSERT INTO otp_codes (user_id, code_hash, expires_at)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&code_hash)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        tx.commit().await.map_err(|_| AppError::InternalError)?;
+
+        // Build and dispatch the OTP email (non-blocking). The plaintext code is
+        // passed to the template but is never logged.
+        let message = templates::otp_code_email(
+            email,
+            &code,
+            OTP_TTL_MINUTES,
+            &self.config.email_from_name,
+        );
+        self.email_service.send_email(message);
+
+        tracing::info!(
+            user_id = %user_id,
+            email = %email,
+            "Signup OTP generated and email dispatched"
+        );
+
+        Ok(())
+    }
+
+    /// Verify a signup OTP and, on success, activate the account and issue tokens.
+    ///
+    /// Enumeration-safe: unknown emails and users with no active code both return
+    /// a generic `InvalidOtp`. On a correct, unexpired, unused code within the
+    /// attempt limit, sets `email_verified = true`, marks the code used, issues a
+    /// refresh + access token pair, and returns the standard `AuthResponse`.
+    pub async fn verify_otp(&self, req: VerifyOtpRequest) -> Result<AuthResponse, AppError> {
+        // 1. Look up the active, non-deleted user by email. Return a generic
+        //    InvalidOtp when there's no match to avoid leaking email existence.
+        let user = sqlx::query_as::<_, OtpUserRow>(
+            r#"
+            SELECT id, email, referral_code, email_verified
+            FROM users
+            WHERE email = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(&req.email)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let user = match user {
+            Some(u) => u,
+            None => return Err(AppError::InvalidOtp),
+        };
+
+        // Already-verified accounts have no active code; return the generic error
+        // to avoid leaking verification state and to prevent duplicate credentials.
+        if user.email_verified {
+            return Err(AppError::InvalidOtp);
+        }
+
+        // 2. Fetch the latest active (unused) OTP row for the user.
+        let otp = sqlx::query_as::<_, OtpCodeRow>(
+            r#"
+            SELECT id, code_hash, attempts, expires_at
+            FROM otp_codes
+            WHERE user_id = $1 AND used = false
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(user.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let otp = match otp {
+            Some(row) => row,
+            None => return Err(AppError::InvalidOtp),
+        };
+
+        // 3. Reject expired codes.
+        if otp.expires_at < Utc::now() {
+            return Err(AppError::OtpExpired);
+        }
+
+        // 4. Reject codes whose attempt budget is exhausted.
+        if otp.attempts >= OTP_MAX_ATTEMPTS {
+            return Err(AppError::OtpAttemptsExceeded);
+        }
+
+        // 5. Compare hashes. On mismatch, increment the attempt count and reject.
+        if hash_token(&req.code) != otp.code_hash {
+            sqlx::query("UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1")
+                .bind(otp.id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| AppError::InternalError)?;
+            return Err(AppError::InvalidOtp);
+        }
+
+        // 6. Correct code: activate the account, mark the code used, and issue a
+        //    refresh token — all within a single transaction.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("UPDATE users SET email_verified = true, updated_at = now() WHERE id = $1")
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("UPDATE otp_codes SET used = true WHERE id = $1")
+            .bind(otp.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
         let raw_refresh_token = generate_refresh_token();
         let token_hash = hash_token(&raw_refresh_token);
         let expires_at = Utc::now() + Duration::days(30);
@@ -396,7 +649,7 @@ impl AuthService {
             VALUES ($1, $2, $3, $4)
             "#,
         )
-        .bind(user_id)
+        .bind(user.id)
         .bind(&token_hash)
         .bind(client_type_to_str(&req.client_type))
         .bind(expires_at)
@@ -404,12 +657,22 @@ impl AuthService {
         .await
         .map_err(|_| AppError::InternalError)?;
 
-        // Commit transaction
         tx.commit().await.map_err(|_| AppError::InternalError)?;
 
-        // Generate access token JWT
+        // Look up the user's individual workspace ID for the response.
+        let workspace_id: Uuid = sqlx::query_scalar(
+            r#"
+            SELECT id FROM workspaces WHERE owner_id = $1 AND type = 'individual' LIMIT 1
+            "#,
+        )
+        .bind(user.id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // 7. Mint the access-token JWT with the same claims a fresh signup uses.
         let claims = AccessTokenClaims {
-            sub: user_id,
+            sub: user.id,
             client_type: req.client_type,
             role: Role::User,
             permissions: default_user_permissions(),
@@ -421,17 +684,80 @@ impl AuthService {
 
         let access_token = encode_access_token(claims, &self.config.jwt_secret);
 
+        tracing::info!(
+            user_id = %user.id,
+            email = %user.email,
+            "Signup OTP verified — account activated and tokens issued"
+        );
+
         Ok(AuthResponse {
             access_token,
             refresh_token: raw_refresh_token,
             user: UserInfo {
-                id: user_id,
-                email: req.email,
+                id: user.id,
+                email: user.email,
                 role: Role::User,
-                referral_code,
+                referral_code: user.referral_code,
                 workspace_id,
             },
         })
+    }
+
+    /// Resend a signup verification OTP. Enumeration-safe: always returns `Ok(())`.
+    ///
+    /// No email is sent for unknown or already-verified accounts, or while within
+    /// the resend cooldown window.
+    pub async fn resend_otp(&self, email: &str) -> Result<(), AppError> {
+        // Look up the active, non-deleted user. Unknown email → silently Ok.
+        let user = sqlx::query_as::<_, OtpUserRow>(
+            r#"
+            SELECT id, email, referral_code, email_verified
+            FROM users
+            WHERE email = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let user = match user {
+            Some(u) => u,
+            None => return Ok(()),
+        };
+
+        // Already-verified accounts don't need a code.
+        if user.email_verified {
+            return Ok(());
+        }
+
+        // Cooldown: skip if the most recent code was issued too recently.
+        let last_created_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+            r#"
+            SELECT created_at FROM otp_codes
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(user.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        if let Some(created_at) = last_created_at {
+            if Utc::now() - created_at < Duration::seconds(OTP_RESEND_COOLDOWN_SECS) {
+                tracing::debug!(
+                    user_id = %user.id,
+                    "Resend OTP within cooldown window — no email sent"
+                );
+                return Ok(());
+            }
+        }
+
+        // Issue a fresh code (invalidates prior unused codes, resets attempts).
+        self.issue_signup_otp(user.id, email).await?;
+        Ok(())
     }
 
     /// Generate a unique 8-character alphanumeric referral code.
@@ -457,6 +783,9 @@ impl AuthService {
     }
 
     /// Validate and record a referral during registration.
+    /// Only records the referral as "pending". Credits are awarded later when
+    /// the referred user upgrades to a paid plan (Pro/Teams).
+    /// Any user can share their referral code (no paid-plan requirement for referrers).
     async fn handle_referral(
         &self,
         referral_code: &str,
@@ -479,7 +808,21 @@ impl AuthService {
             return Err(AppError::SelfReferralNotAllowed);
         }
 
-        // Record in referrals table with status=pending
+        // A user can only be referred ONCE (by anyone)
+        let already_referred: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM referrals WHERE referred_user_id = $1)",
+        )
+        .bind(referred_user_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        if already_referred {
+            return Err(AppError::ReferralAlreadyUsed);
+        }
+
+        // Record in referrals table as PENDING.
+        // Conversion happens when the referred user upgrades to a paid plan.
         sqlx::query(
             r#"
             INSERT INTO referrals (referrer_id, referred_user_id, status)
@@ -489,6 +832,133 @@ impl AuthService {
         .bind(referrer_id)
         .bind(referred_user_id)
         .execute(&mut **tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        Ok(())
+    }
+
+    /// Convert a pending referral and award credits to both users.
+    /// Called when a referred user upgrades to a paid plan.
+    ///
+    /// - Both users get +1 month credit recorded in referral_credits
+    /// - If the user has an active paid subscription, extends period_end by +1 month
+    /// - If the user is on free, credit is banked for later redemption
+    /// - Referral status changes from 'pending' to 'converted'
+    /// - Idempotent: if already converted, does nothing.
+    pub async fn convert_referral(pool: &sqlx::PgPool, referred_user_id: Uuid) -> Result<(), AppError> {
+        // Find pending referral for this user
+        let referral: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+            "SELECT id, referrer_id, status FROM referrals WHERE referred_user_id = $1 LIMIT 1",
+        )
+        .bind(referred_user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let Some((referral_id, referrer_id, status)) = referral else {
+            return Ok(()); // No referral record — user didn't use a referral code
+        };
+
+        // Already converted — idempotent
+        if status == "converted" {
+            return Ok(());
+        }
+
+        // Convert: update status
+        sqlx::query("UPDATE referrals SET status = 'converted' WHERE id = $1")
+            .bind(referral_id)
+            .execute(pool)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        // Credit +1 month to the REFERRER
+        sqlx::query(
+            "INSERT INTO referral_credits (user_id, months, redeemed) VALUES ($1, 1, FALSE)",
+        )
+        .bind(referrer_id)
+        .execute(pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // Credit +1 month to the REFERRED user
+        sqlx::query(
+            "INSERT INTO referral_credits (user_id, months, redeemed) VALUES ($1, 1, FALSE)",
+        )
+        .bind(referred_user_id)
+        .execute(pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // Extend referrer's subscription by +1 month (only if they have an active paid plan)
+        sqlx::query(
+            r#"
+            UPDATE subscriptions
+            SET period_end = COALESCE(period_end, now()) + INTERVAL '1 month',
+                updated_at = now()
+            WHERE workspace_id = (
+                SELECT id FROM workspaces WHERE owner_id = $1 AND type = 'individual' LIMIT 1
+            )
+            AND tier IN ('pro', 'teams')
+            AND status IN ('active', 'past_due')
+            "#,
+        )
+        .bind(referrer_id)
+        .execute(pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // Extend referred user's subscription by +1 month (only if they have an active paid plan)
+        sqlx::query(
+            r#"
+            UPDATE subscriptions
+            SET period_end = COALESCE(period_end, now()) + INTERVAL '1 month',
+                updated_at = now()
+            WHERE workspace_id = (
+                SELECT id FROM workspaces WHERE owner_id = $1 AND type = 'individual' LIMIT 1
+            )
+            AND tier IN ('pro', 'teams')
+            AND status IN ('active', 'past_due')
+            "#,
+        )
+        .bind(referred_user_id)
+        .execute(pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // Mark credits as redeemed only if subscription was actually extended
+        // (credits for free users stay unredeemed for later)
+        sqlx::query(
+            r#"
+            UPDATE referral_credits SET redeemed = TRUE
+            WHERE user_id = $1 AND redeemed = FALSE
+            AND EXISTS (
+                SELECT 1 FROM subscriptions s
+                JOIN workspaces w ON w.id = s.workspace_id
+                WHERE w.owner_id = $1 AND w.type = 'individual'
+                AND s.tier IN ('pro', 'teams') AND s.status IN ('active', 'past_due')
+            )
+            "#,
+        )
+        .bind(referrer_id)
+        .execute(pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query(
+            r#"
+            UPDATE referral_credits SET redeemed = TRUE
+            WHERE user_id = $1 AND redeemed = FALSE
+            AND EXISTS (
+                SELECT 1 FROM subscriptions s
+                JOIN workspaces w ON w.id = s.workspace_id
+                WHERE w.owner_id = $1 AND w.type = 'individual'
+                AND s.tier IN ('pro', 'teams') AND s.status IN ('active', 'past_due')
+            )
+            "#,
+        )
+        .bind(referred_user_id)
+        .execute(pool)
         .await
         .map_err(|_| AppError::InternalError)?;
 
@@ -519,7 +989,7 @@ impl AuthService {
         let thirty_days_ago = Utc::now() - Duration::days(30);
         let user_row = sqlx::query_as::<_, UserRow>(
             r#"
-            SELECT id, email, password_hash, role, status, deleted_at, referral_code, must_reset_password
+            SELECT id, email, password_hash, role, status, deleted_at, referral_code, must_reset_password, email_verified
             FROM users
             WHERE email = $1
               AND (deleted_at IS NULL OR deleted_at > $2)
@@ -550,6 +1020,12 @@ impl AuthService {
 
         // 4. Reset failed attempts on successful authentication
         self.reset_failed_attempts(&req.email);
+
+        // 4b. Reject unverified accounts before issuing any tokens. OAuth and
+        //     pre-migration accounts are backfilled to verified, so unaffected.
+        if !user.email_verified {
+            return Err(AppError::EmailVerificationRequired);
+        }
 
         // 5–7. Proceed within a transaction
         let mut tx = self
@@ -877,6 +1353,8 @@ impl AuthService {
     /// Always returns `Ok(())` regardless of whether the email exists to prevent
     /// email enumeration attacks.
     pub async fn forgot_password(&self, req: ForgotPasswordRequest) -> Result<(), AppError> {
+        tracing::info!(email = %req.email, "Forgot-password request received");
+
         // Look up user by email (only active, non-deleted users)
         let user_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL",
@@ -884,13 +1362,25 @@ impl AuthService {
         .bind(&req.email)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| AppError::InternalError)?;
+        .map_err(|e| {
+            tracing::error!(email = %req.email, error = %e, "Forgot-password: DB lookup failed");
+            AppError::InternalError
+        })?;
 
         // If user doesn't exist, return 200 anyway (prevent email enumeration)
         let user_id = match user_id {
             Some(id) => id,
-            None => return Ok(()),
+            None => {
+                // No email is sent, but log at debug so support can see why.
+                tracing::debug!(
+                    email = %req.email,
+                    "Forgot-password: no matching active user — no email sent (enumeration guard)"
+                );
+                return Ok(());
+            }
         };
+
+        tracing::info!(user_id = %user_id, "Forgot-password: user found, generating reset token");
 
         // Generate crypto-secure random token (32 bytes, hex-encoded)
         let raw_token = generate_refresh_token(); // reuses the same crypto-secure generator
@@ -928,13 +1418,27 @@ impl AuthService {
 
         tx.commit().await.map_err(|_| AppError::InternalError)?;
 
-        // TODO: Send password reset email via EmailService (task 14)
-        // For now, log the raw token as a placeholder
+        // Build the reset link pointing at the frontend reset-password page.
+        let base = self.config.frontend_url.trim_end_matches('/');
+        let reset_link = format!("{}/reset-password?token={}", base, raw_token);
+
         tracing::info!(
             user_id = %user_id,
-            email = %req.email,
-            "Password reset token generated (email sending not yet implemented). Token: {}",
-            raw_token
+            frontend_url = %base,
+            "Forgot-password: reset link built"
+        );
+
+        // Build and dispatch the password-reset email (non-blocking).
+        let message = templates::password_reset_email(
+            &req.email,
+            &reset_link,
+            &self.config.email_from_name,
+        );
+        self.email_service.send_email(message);
+
+        tracing::info!(
+            user_id = %user_id,
+            "Password reset email dispatched",
         );
 
         Ok(())
@@ -1517,6 +2021,10 @@ impl AuthService {
         user_id: Uuid,
         req: UpdateProfileRequest,
     ) -> Result<ProfileResponse, AppError> {
+        if let Some(date_format) = req.date_format.as_deref() {
+            validate_date_format(date_format)?;
+        }
+
         // Build dynamic SET clause — only include fields that are Some
         let mut set_clauses: Vec<String> = Vec::new();
         let mut param_index: usize = 1; // $1 is reserved for user_id in WHERE clause
@@ -1530,6 +2038,7 @@ impl AuthService {
             language: Option<String>,
             country_code: Option<String>,
             phone: Option<String>,
+            date_format: Option<String>,
         }
 
         let params = DynParams {
@@ -1540,6 +2049,7 @@ impl AuthService {
             language: req.language.clone(),
             country_code: req.country_code.clone(),
             phone: req.phone.clone(),
+            date_format: req.date_format.clone(),
         };
 
         // Track which fields to bind (in order)
@@ -1580,6 +2090,11 @@ impl AuthService {
             set_clauses.push(format!("phone = ${}", param_index));
             bind_order.push("phone");
         }
+        if req.date_format.is_some() {
+            param_index += 1;
+            set_clauses.push(format!("date_format = ${}", param_index));
+            bind_order.push("date_format");
+        }
 
         // If no fields to update, just return current profile
         if set_clauses.is_empty() {
@@ -1590,7 +2105,7 @@ impl AuthService {
         set_clauses.push("updated_at = NOW()".to_string());
 
         let sql = format!(
-            "UPDATE users SET {} WHERE id = $1 RETURNING id, email, first_name, last_name, profile_picture_url, timezone, language, country_code, phone, role, referral_code, created_at, updated_at",
+            "UPDATE users SET {} WHERE id = $1 RETURNING id, email, first_name, last_name, profile_picture_url, timezone, language, country_code, phone, date_format, role, referral_code, created_at, updated_at",
             set_clauses.join(", ")
         );
 
@@ -1606,6 +2121,7 @@ impl AuthService {
                 "language" => query = query.bind(params.language.as_deref()),
                 "country_code" => query = query.bind(params.country_code.as_deref()),
                 "phone" => query = query.bind(params.phone.as_deref()),
+                "date_format" => query = query.bind(params.date_format.as_deref()),
                 _ => {}
             }
         }
@@ -1622,7 +2138,7 @@ impl AuthService {
     pub async fn get_profile(&self, user_id: Uuid) -> Result<ProfileResponse, AppError> {
         let profile = sqlx::query_as::<_, ProfileResponse>(
             r#"
-            SELECT id, email, first_name, last_name, profile_picture_url, timezone, language, country_code, phone, role, referral_code, created_at, updated_at
+            SELECT id, email, first_name, last_name, profile_picture_url, timezone, language, country_code, phone, date_format, role, referral_code, created_at, updated_at
             FROM users
             WHERE id = $1 AND deleted_at IS NULL
             "#,
@@ -1892,6 +2408,14 @@ pub(crate) fn generate_random_code(len: usize) -> String {
         .collect()
 }
 
+/// Generate a cryptographically secure 6-digit numeric OTP, zero-padded.
+///
+/// Produces a string in the range "000000".."999999".
+fn generate_otp_code() -> String {
+    let n: u32 = rand::thread_rng().gen_range(0..1_000_000);
+    format!("{:06}", n)
+}
+
 /// Convert ClientType enum to its database string representation.
 pub(crate) fn client_type_to_str(ct: &ClientType) -> &'static str {
     match ct {
@@ -1937,6 +2461,7 @@ mod property_tests {
             oauth_redirect_base_url: String::new(),
             ai_provider_url: String::new(),
             ai_provider_key: String::new(),
+            gemini_api_key: String::new(),
             billing_webhook_secret: String::new(),
             email_from_address: String::new(),
             seed_admin_email: String::new(),
@@ -1963,11 +2488,17 @@ mod property_tests {
             shutdown_timeout_secs: 30,
             billing_success_url: None,
             billing_cancel_url: None,
+            paddle_api_key: None,
+            paddle_environment: "sandbox".to_string(),
+            frontend_url: "http://localhost".to_string(),
         });
+
+        let email_service = EmailService::new(config.clone());
 
         AuthService {
             pool,
             config,
+            email_service,
             failed_attempts: DashMap::new(),
         }
     }
@@ -1981,6 +2512,17 @@ mod property_tests {
     /// `true` = failed attempt, `false` = successful attempt.
     fn attempt_sequence_strategy() -> impl Strategy<Value = Vec<bool>> {
         prop::collection::vec(any::<bool>(), 1..30)
+    }
+
+    #[test]
+    fn date_format_allowlist_accepts_only_supported_patterns() {
+        for date_format in SUPPORTED_DATE_FORMATS {
+            assert!(validate_date_format(date_format).is_ok());
+        }
+
+        for date_format in ["", "DD-MM-YYYY", "dd.MM.yyyy", "locale", "dd-MM-yyyy "] {
+            assert!(validate_date_format(date_format).is_err());
+        }
     }
 
     // ─── Property 10: Brute-force lockout state machine ─────────────────────────
@@ -2005,6 +2547,16 @@ mod property_tests {
     }
 
     proptest! {
+        /// **Validates: Requirements 1.2, 1.3, 1.6**
+        ///
+        /// Property 1: Validation accepts a string if and only if it is one of the
+        /// six approved date-fns patterns.
+        #[test]
+        fn prop_date_format_allowlist_is_exact(candidate in any::<String>()) {
+            let expected = SUPPORTED_DATE_FORMATS.contains(&candidate.as_str());
+            prop_assert_eq!(validate_date_format(&candidate).is_ok(), expected);
+        }
+
         /// **Validates: Requirements 1.50, 1.51, 1.52**
         ///
         /// Property 10a: After exactly 5 consecutive failures, the account is locked.
@@ -2155,5 +2707,221 @@ mod property_tests {
                 Ok(())
             })?;
         }
+    }
+}
+
+// ─── OTP Tests (Email OTP 2FA During Signup) ─────────────────────────────────
+//
+// Tests for the email-OTP signup verification feature. This module is split in
+// two halves:
+//
+//   1. PURE, runnable tests for `generate_otp_code()` — the one piece of OTP
+//      logic that has no database dependency. These run on `cargo test --lib`.
+//
+//   2. DB-DEPENDENT correctness properties (from design.md "Correctness
+//      Properties" 1–10). The register/verify_otp/resend_otp/login flows all
+//      require a live Postgres connection (they run `sqlx` transactions), and
+//      this repo currently has NO `#[sqlx::test]` / ephemeral-DB harness. Rather
+//      than invent one, each property below is captured as an `#[ignore]`d stub
+//      with a descriptive name and a comment stating what a DB-backed test would
+//      assert. Run them with a live DB via:
+//          DATABASE_URL=postgres://... cargo test --lib otp_tests -- --ignored
+//      (each currently `panic!`s to signal "not yet implemented against a DB").
+
+#[cfg(test)]
+mod otp_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ─── Pure tests: generate_otp_code() ─────────────────────────────────────
+    //
+    // **Validates: Requirements 2.1** (crypto-secure 6-digit numeric code)
+    // Corresponds to design Testing Strategy: "generate_otp_code returns 6
+    // numeric digits, zero-padded, within range."
+
+    /// A generated OTP is always exactly 6 characters long — proving zero
+    /// padding is preserved even for small numbers (e.g. 42 -> "000042").
+    #[test]
+    fn generate_otp_code_is_always_six_chars() {
+        for _ in 0..10_000 {
+            let code = generate_otp_code();
+            assert_eq!(
+                code.len(),
+                6,
+                "OTP must be exactly 6 chars (zero-padded), got {:?}",
+                code
+            );
+        }
+    }
+
+    /// Every character of a generated OTP is an ASCII digit 0-9.
+    #[test]
+    fn generate_otp_code_is_all_ascii_digits() {
+        for _ in 0..10_000 {
+            let code = generate_otp_code();
+            assert!(
+                code.chars().all(|c| c.is_ascii_digit()),
+                "OTP must be all ASCII digits, got {:?}",
+                code
+            );
+        }
+    }
+
+    /// A generated OTP parses to an integer within the inclusive range
+    /// 0..=999999.
+    #[test]
+    fn generate_otp_code_parses_within_range() {
+        for _ in 0..10_000 {
+            let code = generate_otp_code();
+            let n: u32 = code
+                .parse()
+                .unwrap_or_else(|_| panic!("OTP must parse to a number, got {:?}", code));
+            assert!(n <= 999_999, "OTP numeric value must be <= 999999, got {}", n);
+        }
+    }
+
+    /// Sanity check that leading zeros really are preserved: reformatting the
+    /// parsed number with `{:06}` must round-trip to the original string.
+    #[test]
+    fn generate_otp_code_zero_padding_round_trips() {
+        for _ in 0..10_000 {
+            let code = generate_otp_code();
+            let n: u32 = code.parse().unwrap();
+            assert_eq!(
+                format!("{:06}", n),
+                code,
+                "Zero-padding must round-trip; {} reformatted != {:?}",
+                n,
+                code
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+
+        /// **Validates: Requirements 2.1**
+        ///
+        /// Property (OTP shape): for every generated code, the invariants hold
+        /// simultaneously — exactly 6 chars, all ASCII digits, numeric value in
+        /// 0..=999999, and zero-padding round-trips. Driven by proptest so the
+        /// RNG-based generator is exercised across many iterations.
+        #[test]
+        fn prop_generate_otp_code_shape(_seed in any::<u64>()) {
+            let code = generate_otp_code();
+            prop_assert_eq!(code.len(), 6, "length must be 6 (zero-padded): {:?}", code);
+            prop_assert!(
+                code.chars().all(|c| c.is_ascii_digit()),
+                "all chars must be ASCII digits: {:?}", code
+            );
+            let n: u32 = code.parse().map_err(|_| {
+                proptest::test_runner::TestCaseError::fail(format!("not numeric: {:?}", code))
+            })?;
+            prop_assert!(n <= 999_999, "value must be <= 999999: {}", n);
+            prop_assert_eq!(format!("{:06}", n), code, "zero-padding must round-trip");
+        }
+    }
+
+    // ─── DB-dependent correctness properties (design.md Properties 1–10) ─────
+    //
+    // These exercise register / verify_otp / resend_otp / login, all of which
+    // run sqlx transactions against Postgres. This repo has no sqlx-test / DB
+    // harness, so they are `#[ignore]`d stubs. They document exactly what to
+    // assert and are wired to `panic!` so `--ignored` runs surface them as
+    // "not implemented against a DB" rather than false green.
+
+    const DB_STUB_MSG: &str =
+        "requires a live Postgres DATABASE_URL and a DB test harness (none exists in this repo yet)";
+
+    /// **Property 1 — No credentials before verification.** Validates Req 1.1.
+    /// After `register`, assert: response is `RegisterResponse` (no tokens), no
+    /// `refresh_tokens` row exists for the new user.
+    #[test]
+    #[ignore = "DB-dependent: no tokens must exist after register"]
+    fn prop_no_credentials_before_verification() {
+        panic!("Property 1 (no-credentials-pre-verify) {DB_STUB_MSG}");
+    }
+
+    /// **Property 2 — Verification required to log in.** Validates Req 7.1.
+    /// For an `email_verified = false` user, `login` and a wrong-code
+    /// `verify_otp` both error and issue zero tokens.
+    #[test]
+    #[ignore = "DB-dependent: unverified user cannot obtain tokens"]
+    fn prop_verification_required_to_log_in() {
+        panic!("Property 2 (verification-required) {DB_STUB_MSG}");
+    }
+
+    /// **Property 3 — Single active code.** Validates Req 2.4, 5.1.
+    /// After any `register` or `resend_otp`, at most one `otp_codes` row per
+    /// user has `used = false AND expires_at > now()`.
+    #[test]
+    #[ignore = "DB-dependent: at most one active OTP per user"]
+    fn prop_single_active_code() {
+        panic!("Property 3 (single-active-code) {DB_STUB_MSG}");
+    }
+
+    /// **Property 4 — Plaintext never persisted.** Validates Req 2.2, 9.1.
+    /// Stored `code_hash == hash_token(code)`; plaintext appears in no column.
+    /// (Note: the `code_hash == hash_token(code)` half is pure and could be
+    /// unit-tested; the "not in any DB column / log" half needs a DB + log
+    /// capture, so this stays a DB stub.)
+    #[test]
+    #[ignore = "DB-dependent: plaintext OTP never stored/logged"]
+    fn prop_plaintext_never_persisted() {
+        panic!("Property 4 (no-plaintext) {DB_STUB_MSG}");
+    }
+
+    /// **Property 5 — Attempts are bounded.** Validates Req 4.2.
+    /// After 5 failed `verify_otp` attempts, every further attempt on the same
+    /// code returns `OtpAttemptsExceeded` until a resend creates a new code.
+    #[test]
+    #[ignore = "DB-dependent: 6th attempt returns OtpAttemptsExceeded"]
+    fn prop_attempts_are_bounded() {
+        panic!("Property 5 (bounded-attempts) {DB_STUB_MSG}");
+    }
+
+    /// **Property 6 — Expiry is enforced.** Validates Req 4.3.
+    /// A code with `expires_at <= now()` never verifies, even if correct.
+    #[test]
+    #[ignore = "DB-dependent: expired code returns OtpExpired"]
+    fn prop_expiry_is_enforced() {
+        panic!("Property 6 (expiry-enforced) {DB_STUB_MSG}");
+    }
+
+    /// **Property 7 — Success is idempotent-safe.** Validates Req 3.3.
+    /// A `used = true` code never verifies again; a verified user cannot obtain
+    /// a second token set from a stale code.
+    #[test]
+    #[ignore = "DB-dependent: used code cannot re-issue tokens"]
+    fn prop_success_is_idempotent_safe() {
+        panic!("Property 7 (idempotent-success) {DB_STUB_MSG}");
+    }
+
+    /// **Property 8 — Enumeration resistance.** Validates Req 4.4, 5.3.
+    /// `verify_otp` returns the same generic `InvalidOtp` for unknown email and
+    /// for a known email with no active code; `resend_otp` returns 204 for
+    /// verified, unverified, and unknown emails alike.
+    #[test]
+    #[ignore = "DB-dependent: verify/resend are enumeration-safe"]
+    fn prop_enumeration_resistance() {
+        panic!("Property 8 (enumeration-resistance) {DB_STUB_MSG}");
+    }
+
+    /// **Property 9 — Provisioning preserved.** Validates Req 1.5.
+    /// A registered (unverified) user has the same workspace/member/subscription
+    /// rows as before this feature.
+    #[test]
+    #[ignore = "DB-dependent: workspace/subscription still provisioned"]
+    fn prop_provisioning_preserved() {
+        panic!("Property 9 (provisioning-preserved) {DB_STUB_MSG}");
+    }
+
+    /// **Property 10 — Grandfathering.** Validates Req 7.2, 7.3.
+    /// After migration 0011, every pre-existing user and every OAuth account has
+    /// `email_verified = true`.
+    #[test]
+    #[ignore = "DB-dependent: migration backfills email_verified = true"]
+    fn prop_grandfathering() {
+        panic!("Property 10 (grandfathering) {DB_STUB_MSG}");
     }
 }

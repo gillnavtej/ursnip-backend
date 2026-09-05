@@ -18,8 +18,9 @@ use crate::auth::oauth::{OAuthProvider, OAuthService};
 use crate::auth::service::{
     AuthResponse, AuthService, ChangeEmailRequest, ChangePasswordRequest,
     CreateAdminInviteRequest, ForgotPasswordRequest, LoginRequest, LogoutRequest, ProfileResponse,
-    RefreshRequest, RegisterRequest, RegisterViaInviteRequest, ResetPasswordRequest, SessionInfo,
-    UpdateProfileRequest, VerifyEmailChangeRequest,
+    RefreshRequest, RegisterRequest, RegisterResponse, RegisterViaInviteRequest,
+    ResetPasswordRequest, SessionInfo, UpdateProfileRequest, VerifyEmailChangeRequest,
+    VerifyOtpRequest,
 };
 use crate::config::AppConfig;
 use crate::errors::AppError;
@@ -33,6 +34,14 @@ use crate::models::common::ClientType;
 pub struct OAuthAuthorizeParams {
     /// Client type: "native" or "web".
     pub client: String,
+}
+
+/// Request body for the resend-OTP endpoint. Mirrors `ForgotPasswordRequest`
+/// (a single `email` field) but is kept distinct for endpoint clarity.
+#[derive(Debug, Deserialize)]
+pub struct ResendOtpRequest {
+    /// Email address to reissue a signup verification code to.
+    pub email: String,
 }
 
 /// Query parameters for the OAuth callback endpoint.
@@ -50,13 +59,40 @@ pub struct OAuthCallbackParams {
 
 /// POST /auth/register
 ///
-/// Register a new user account and return a token pair.
+/// Register a new user account. Email/password signup no longer returns tokens;
+/// it creates an unverified user, issues a signup OTP by email, and responds
+/// `202 Accepted` with a verification-required body. The client must complete
+/// email-OTP verification (`/auth/verify-otp`) to obtain tokens.
 pub async fn register_handler(
     Extension(auth_service): Extension<Arc<AuthService>>,
     Json(body): Json<RegisterRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<(StatusCode, Json<RegisterResponse>), AppError> {
     let response = auth_service.register(body).await?;
-    Ok((StatusCode::CREATED, Json(response)))
+    Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+/// POST /auth/verify-otp
+///
+/// Verify a signup email-OTP code. On success, marks the user verified and
+/// returns the standard token pair (`AuthResponse`, HTTP 200).
+pub async fn verify_otp_handler(
+    Extension(auth_service): Extension<Arc<AuthService>>,
+    Json(body): Json<VerifyOtpRequest>,
+) -> Result<Json<AuthResponse>, AppError> {
+    Ok(Json(auth_service.verify_otp(body).await?))
+}
+
+/// POST /auth/resend-otp
+///
+/// Reissue a signup OTP for the given email. Enumeration-safe: always returns
+/// `204 No Content`, whether the email is unknown, already verified, or
+/// rate-limited by the resend cooldown.
+pub async fn resend_otp_handler(
+    Extension(auth_service): Extension<Arc<AuthService>>,
+    Json(body): Json<ResendOtpRequest>,
+) -> Result<StatusCode, AppError> {
+    auth_service.resend_otp(&body.email).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// POST /auth/login
@@ -355,4 +391,63 @@ fn parse_client_type(s: &str) -> Result<ClientType, AppError> {
         "web" => Ok(ClientType::Web),
         _ => Err(AppError::InvalidRequestBody),
     }
+}
+
+
+// ─── Referral Stats Handler ─────────────────────────────────────────────────────
+
+/// GET /auth/referrals
+///
+/// Get the authenticated user's referral information:
+/// - Their referral code
+/// - Number of people they've referred
+/// - Credits earned (months)
+/// - List of referral dates (no PII of referred users)
+pub async fn get_my_referrals_handler(
+    Extension(pool): Extension<sqlx::PgPool>,
+    Extension(claims): Extension<AccessTokenClaims>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Get referral code
+    let referral_code: String = sqlx::query_scalar(
+        "SELECT referral_code FROM users WHERE id = $1",
+    )
+    .bind(claims.sub)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| AppError::InternalError)?;
+
+    // Count referrals
+    let total_referrals: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM referrals WHERE referrer_id = $1",
+    )
+    .bind(claims.sub)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| AppError::InternalError)?;
+
+    let converted_referrals: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM referrals WHERE referrer_id = $1 AND status = 'converted'",
+    )
+    .bind(claims.sub)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| AppError::InternalError)?;
+
+    // Total credits earned
+    let total_credits: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(months), 0) FROM referral_credits WHERE user_id = $1",
+    )
+    .bind(claims.sub)
+    .fetch_one(&pool)
+    .await
+    .map_err(|_| AppError::InternalError)?;
+
+    Ok(Json(serde_json::json!({
+        "referral_code": referral_code,
+        "referral_url": format!("https://app.ursnip.com/register?ref={}", referral_code),
+        "total_referrals": total_referrals,
+        "converted_referrals": converted_referrals,
+        "total_credits_months": total_credits,
+        "reward_per_referral": "1 month Pro for both you and your friend",
+    })))
 }

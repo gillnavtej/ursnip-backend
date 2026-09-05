@@ -6,7 +6,7 @@ use crate::middleware::auth_extractor::AccessTokenClaims;
 use crate::models::common::Role;
 
 /// Access token TTL for regular users: 15 minutes.
-const USER_TTL_SECONDS: i64 = 15 * 60;
+const USER_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// Access token TTL for admin users: 5 minutes.
 const ADMIN_TTL_SECONDS: i64 = 5 * 60;

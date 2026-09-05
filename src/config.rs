@@ -23,6 +23,7 @@ pub struct AppConfig {
     pub oauth_redirect_base_url: String,
     pub ai_provider_url: String,
     pub ai_provider_key: String,
+    pub gemini_api_key: String,
     pub billing_webhook_secret: String,
     pub email_from_address: String,
     pub seed_admin_email: String,
@@ -93,6 +94,7 @@ impl AppConfig {
         let oauth_redirect_base_url = require!("OAUTH_REDIRECT_BASE_URL");
         let ai_provider_url = require!("AI_PROVIDER_URL");
         let ai_provider_key = require!("AI_PROVIDER_KEY");
+        let gemini_api_key = env::var("GEMINIEAPIKEY").unwrap_or_default();
         let billing_webhook_secret = require!("BILLING_WEBHOOK_SECRET");
         let email_from_address = require!("EMAIL_FROM_ADDRESS");
         let seed_admin_email = require!("SEED_ADMIN_EMAIL");
@@ -281,6 +283,7 @@ impl AppConfig {
             oauth_redirect_base_url,
             ai_provider_url,
             ai_provider_key,
+            gemini_api_key,
             billing_webhook_secret,
             email_from_address,
             seed_admin_email,

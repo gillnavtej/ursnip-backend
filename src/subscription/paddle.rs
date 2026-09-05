@@ -118,6 +118,8 @@ struct PaddleCheckoutData {
 /// the checkout URL for the user to complete payment.
 ///
 /// If `PADDLE_API_KEY` is not configured, falls back to a mock checkout URL.
+/// Requires `PADDLE_PRICE_ID_PRO` and `PADDLE_PRICE_ID_TEAMS` environment variables
+/// to map tiers to pre-created Paddle Price IDs.
 pub async fn create_checkout_transaction(
     config: &AppConfig,
     params: CreateTransactionParams,
@@ -138,54 +140,40 @@ pub async fn create_checkout_transaction(
         }
     };
 
+    // Look up the pre-created Paddle Price ID for this tier
+    let price_id = match params.tier.as_str() {
+        "pro" => std::env::var("PADDLE_PRICE_ID_PRO").ok(),
+        "teams" => std::env::var("PADDLE_PRICE_ID_TEAMS").ok(),
+        _ => None,
+    };
+
+    let price_id = match price_id {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            tracing::error!(
+                "No Paddle Price ID configured for tier '{}'. Set PADDLE_PRICE_ID_PRO / PADDLE_PRICE_ID_TEAMS in .env",
+                params.tier
+            );
+            return Err(AppError::InternalError);
+        }
+    };
+
     let base_url = match config.paddle_environment.as_str() {
         "production" | "live" => PADDLE_PRODUCTION_API,
         _ => PADDLE_SANDBOX_API,
     };
 
-    let plan_name = match params.tier.as_str() {
-        "pro" => "UrSnip Pro",
-        "teams" => "UrSnip Team",
-        _ => "UrSnip",
-    };
-
-    let plan_description = match params.tier.as_str() {
-        "pro" => "UrSnip Pro annual subscription",
-        "teams" => "UrSnip Team annual subscription",
-        _ => "UrSnip subscription",
-    };
-
-    // Build the request body using inline prices (no pre-created Price ID needed)
-    let request_body = CreateTransactionRequest {
-        items: vec![TransactionItem {
-            price: TransactionPrice {
-                description: plan_description.to_string(),
-                unit_price: UnitPrice {
-                    amount: params.total_amount_cents.to_string(),
-                    currency_code: params.currency.to_uppercase(),
-                },
-                product: TransactionProduct {
-                    name: plan_name.to_string(),
-                    description: plan_description.to_string(),
-                    tax_category: "standard".to_string(),
-                },
-                billing_cycle: BillingCycle {
-                    interval: "year".to_string(),
-                    frequency: 1,
-                },
-                tax_mode: "account_setting".to_string(),
-            },
-            quantity: 1,
+    // Build the request body using a pre-created Price ID
+    let request_body = serde_json::json!({
+        "items": [{
+            "price_id": price_id,
+            "quantity": 1
         }],
-        checkout: params.success_url.as_ref().map(|url| CheckoutSettings {
-            url: url.clone(),
-        }),
-        custom_data: serde_json::json!({
+        "custom_data": {
             "workspace_id": params.workspace_id,
-            "tier": params.tier,
-        }),
-        currency_code: Some(params.currency.to_uppercase()),
-    };
+            "tier": params.tier
+        }
+    });
 
     // Make the API call
     let client = reqwest::Client::new();
@@ -223,7 +211,6 @@ pub async fn create_checkout_transaction(
         .checkout
         .and_then(|c| c.url)
         .unwrap_or_else(|| {
-            // Construct the checkout URL from the transaction ID
             format!(
                 "https://checkout.paddle.com/transactions/{}",
                 paddle_response.data.id

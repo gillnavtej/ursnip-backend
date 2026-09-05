@@ -1,0 +1,17 @@
+Collaboration Invitation
+========================
+
+Hi,
+
+{{ owner_name }} has invited you to collaborate on their {{ app_name }} account. Use the link below to accept:
+
+{{ invite_link }}
+
+Once you accept, {{ owner_name }} can grant you view or edit access to specific workspaces, folders, and snippets.
+
+This invitation expires in 7 days.
+
+If you weren't expecting this invitation, you can safely ignore this email.
+
+---
+© {{ app_name }}. All rights reserved.

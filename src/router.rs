@@ -36,7 +36,7 @@ use crate::middleware::panic_recovery::panic_recovery_layer;
 use crate::middleware::rate_limit::{ip_rate_limit, user_rate_limit, RateLimiter};
 use crate::middleware::{
     admin_guard, auth_middleware, client_type_guard, security_headers,
-    subscription_context_middleware, trace_id_layer,
+    subscription_context_middleware, trace_id_layer, workspace_context_guard,
 };
 use crate::admin::handlers::{
     cancel_subscription_handler as admin_cancel_subscription_handler,
@@ -60,6 +60,7 @@ use crate::auth::handlers::{
     get_profile_handler, change_email_handler, verify_email_change_handler, change_password_handler,
     delete_account_handler, list_sessions_handler, revoke_session_handler,
     oauth_authorize_handler, oauth_callback_handler, register_via_invite_handler,
+    get_my_referrals_handler, verify_otp_handler, resend_otp_handler,
 };
 use crate::auth::oauth::OAuthService;
 use crate::auth::service::AuthService;
@@ -67,20 +68,43 @@ use crate::sync::handlers::{
     batch_operations_handler, create_folder_handler, create_snippet_handler,
     delete_folder_handler, delete_snippet_handler, get_deltas_handler, get_snapshot_handler,
     update_folder_handler, update_snippet_handler, ws_handler,
+    record_snippet_usage_handler, get_snippet_analytics_handler,
+    get_platform_analytics_handler, restore_snippet_handler, hard_delete_snippet_handler,
+    restore_folder_handler, hard_delete_folder_handler,
+    get_data_sources_handler, save_data_sources_handler,
 };
 use crate::sync::service::SyncService;
 use crate::sync::session_registry::SessionRegistry;
 use crate::workspace::handlers::{
     create_invite_handler, create_team_handler, get_team_handler, join_via_invite_handler,
     list_members_handler, remove_member_handler,
+    list_workspaces_handler as list_user_workspaces_handler, get_workspace_detail_handler,
+    update_workspace_handler, delete_workspace_detail_handler, lookup_users_handler,
+    get_member_permissions_handler, update_member_permissions_handler, reset_member_permissions_handler,
 };
 use crate::workspace::service::{TeamService, WorkspaceService};
 use crate::ai::AiService;
-use crate::ai::handlers::expand_handler;
+use crate::ai::handlers::{expand_handler, generate_handler, improve_handler};
+use crate::devices::handlers::{
+    list_devices_handler, register_device_handler, update_device_handler, delete_device_handler,
+};
+use crate::devices::service::DeviceService;
+use crate::notifications::handlers::{
+    list_notifications_handler, mark_read_handler, mark_all_read_handler,
+};
+use crate::notifications::service::NotificationService;
 use crate::subscription::handlers::{
-    billing_webhook_handler, checkout_handler, current_subscription_handler, upgrade_handler,
+    activate_subscription_handler, add_seats_handler, billing_webhook_handler,
+    cancel_subscription_handler, checkout_handler, current_subscription_handler,
+    list_transactions_handler, upgrade_handler,
 };
 use crate::subscription::service::SubscriptionService;
+
+use crate::collaborators::handlers::{
+    accept_invite_handler, delete_grant_handler, invite_handler, list_collaborators_handler,
+    list_grants_handler, remove_collaborator_handler, upsert_grant_handler,
+};
+use crate::collaborators::CollaboratorService;
 
 // ─── Application State ─────────────────────────────────────────────────────────
 
@@ -119,6 +143,7 @@ pub fn build_router(state: AppState) -> Router {
     let health_routes = Router::new()
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        .route("/plans", get(plans_handler))
         .layer(Extension(state.pool.clone()))
         .layer(Extension(state.ready.clone()));
 
@@ -129,6 +154,8 @@ pub fn build_router(state: AppState) -> Router {
     // ── Auth routes (public — no auth required) ─────────────────────────────
     let auth_routes = Router::new()
         .route("/auth/register", post(register_handler))
+        .route("/auth/verify-otp", post(verify_otp_handler))
+        .route("/auth/resend-otp", post(resend_otp_handler))
         .route("/auth/login", post(login_handler))
         .route("/auth/refresh", post(refresh_handler))
         .route("/auth/forgot-password", post(forgot_password_handler))
@@ -150,7 +177,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/account", delete(delete_account_handler))
         .route("/auth/sessions", get(list_sessions_handler))
         .route("/auth/sessions/:session_id", delete(revoke_session_handler))
-        .layer(Extension(auth_service.clone()));
+        .route("/auth/referrals", get(get_my_referrals_handler))
+        .layer(Extension(auth_service.clone()))
+        .layer(Extension(state.pool.clone()));
 
     // ── Webhook routes (no auth required, verified by signature) ─────────────
     let webhook_routes = Router::new()
@@ -158,26 +187,62 @@ pub fn build_router(state: AppState) -> Router {
         .layer(Extension(state.config.clone()))
         .layer(Extension(state.pool.clone()));
 
-    // ── Sync routes (native only, elevated body limit) ──────────────────────
-    let sync_routes = Router::new()
+    // ── Sync routes (native only, elevated body limit, workspace-scoped RBAC) ──
+    // Guarded routes require X-Workspace-ID header (reads from header or query param):
+    let pool_for_sync = Arc::new(state.pool.clone());
+    let sync_guarded_routes = Router::new()
         .route("/sync/snippets", post(create_snippet_handler))
         .route("/sync/snippets/:id", patch(update_snippet_handler))
         .route("/sync/snippets/:id", delete(delete_snippet_handler))
         .route("/sync/snippets/batch", post(batch_operations_handler))
+        .route("/sync/snippets/:id/usage", post(record_snippet_usage_handler))
+        .route("/sync/snippets/:id/analytics", get(get_snippet_analytics_handler))
+        .route("/sync/snippets/:id/restore", patch(restore_snippet_handler))
+        .route("/sync/snippets/:id/hard", delete(hard_delete_snippet_handler))
         .route("/sync/folders", post(create_folder_handler))
         .route("/sync/folders/:id", patch(update_folder_handler))
         .route("/sync/folders/:id", delete(delete_folder_handler))
+        .route("/sync/folders/:id/restore", patch(restore_folder_handler))
+        .route("/sync/folders/:id/hard", delete(hard_delete_folder_handler))
         .route("/sync/snapshot", get(get_snapshot_handler))
         .route("/sync/deltas", get(get_deltas_handler))
-        .route("/sync/ws", get(ws_handler))
+        .layer(Extension(state.pool.clone()))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            workspace_context_guard(req, next, pool_for_sync.clone())
+        }));
+
+    // WebSocket + platform analytics routes bypass workspace context:
+    let ws_state = crate::sync::websocket::WsState {
+        registry: state.session_registry.clone(),
+        sync_service: Arc::new(SyncService::new(state.pool.clone())),
+        jwt_secret: jwt_secret.clone(),
+    };
+    // WS route is separate — it handles its own JWT auth via query param
+    let ws_route = Router::new()
+        .route("/sync/ws", get(crate::sync::websocket::ws_upgrade_handler).with_state(ws_state));
+
+    let sync_unguarded_routes = Router::new()
+        .route("/sync/analytics", get(get_platform_analytics_handler))
+        .route("/sync/data-sources", get(get_data_sources_handler).put(save_data_sources_handler))
+        .layer(Extension(state.pool.clone()));
+
+    let notification_service = Arc::new(NotificationService::new(state.pool.clone()));
+
+    let sync_routes = Router::new()
+        .merge(sync_guarded_routes)
+        .merge(sync_unguarded_routes)
         .layer(Extension(Arc::new(SyncService::new(state.pool.clone()))))
         .layer(Extension(state.session_registry.clone()))
+        .layer(Extension(notification_service.clone()))
         .layer(body_limit_layer(SYNC_BODY_LIMIT));
 
     // ── AI routes (native only) ─────────────────────────────────────────────
     let ai_routes = Router::new()
         .route("/ai/expand", post(expand_handler))
+        .route("/ai/generate", post(generate_handler))
+        .route("/ai/improve", post(improve_handler))
         .layer(Extension(Arc::new(AiService::new(state.pool.clone(), state.config.clone()))));
+
 
     // ── Admin routes (web only, admin role required) ─────────────────────────
     let admin_routes = Router::new()
@@ -229,26 +294,128 @@ pub fn build_router(state: AppState) -> Router {
         .layer(Extension(state.pool.clone()))
         .layer(axum::middleware::from_fn(admin_guard));
 
-    // ── Subscription routes (web only) ──────────────────────────────────────
+    // ── Subscription routes (web only, workspace-scoped RBAC) ─────────────────
+    let pool_for_subs = Arc::new(state.pool.clone());
     let subscription_routes = Router::new()
         .route("/subscriptions/upgrade", post(upgrade_handler))
         .route("/subscriptions/checkout", post(checkout_handler))
+        .route("/subscriptions/activate", post(activate_subscription_handler))
+        .route("/subscriptions/cancel", post(cancel_subscription_handler))
+        .route("/subscriptions/add-seats", post(add_seats_handler))
         .route("/subscriptions/current", get(current_subscription_handler))
-        .layer(Extension(Arc::new(SubscriptionService::new(state.pool.clone(), state.config.clone()))));
+        .route("/subscriptions/transactions", get(list_transactions_handler))
+        .layer(Extension(Arc::new(SubscriptionService::new(state.pool.clone(), state.config.clone()))))
+        .layer(Extension(state.pool.clone()))
+        .layer(Extension(state.config.clone()))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            workspace_context_guard(req, next, pool_for_subs.clone())
+        }));
 
-    // ── Team routes (web only) ──────────────────────────────────────────────
-    let team_routes = Router::new()
-        .route("/teams", post(create_team_handler))
+    // ── Team routes (web only, workspace-scoped RBAC) ─────────────────────────
+    // Routes that require workspace membership:
+    let pool_for_teams = Arc::new(state.pool.clone());
+    let team_guarded_routes = Router::new()
         .route("/teams/:workspace_id", get(get_team_handler))
         .route("/teams/:workspace_id/invites", post(create_invite_handler))
-        .route("/teams/:workspace_id/join", post(join_via_invite_handler))
         .route("/teams/:workspace_id/members", get(list_members_handler))
         .route(
             "/teams/:workspace_id/members/:user_id",
             delete(remove_member_handler),
         )
+        .route(
+            "/teams/:workspace_id/members/:user_id/permissions",
+            get(get_member_permissions_handler)
+                .patch(update_member_permissions_handler)
+                .delete(reset_member_permissions_handler),
+        )
+        .layer(axum::middleware::from_fn(move |req, next| {
+            workspace_context_guard(req, next, pool_for_teams.clone())
+        }));
+
+    // Routes that don't require existing membership (create workspace, join via invite):
+    let team_unguarded_routes = Router::new()
+        .route("/teams", post(create_team_handler))
+        .route("/teams/:workspace_id/join", post(join_via_invite_handler));
+
+    let team_routes = Router::new()
+        .merge(team_guarded_routes)
+        .merge(team_unguarded_routes)
         .layer(Extension(Arc::new(WorkspaceService::new(state.pool.clone()))))
-        .layer(Extension(Arc::new(TeamService::new(state.pool.clone()))));
+        .layer(Extension(Arc::new(TeamService::new(state.pool.clone()))))
+        .layer(Extension(state.session_registry.clone()));
+
+    // ── Workspace CRUD routes (web, workspace-scoped RBAC where needed) ─────
+    let pool_for_workspaces = Arc::new(state.pool.clone());
+    // Guarded routes require workspace membership:
+    let workspace_guarded_routes = Router::new()
+        .route("/workspaces/:id", get(get_workspace_detail_handler))
+        .route("/workspaces/:id", patch(update_workspace_handler))
+        .route("/workspaces/:id", delete(delete_workspace_detail_handler))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            workspace_context_guard(req, next, pool_for_workspaces.clone())
+        }));
+
+    // Unguarded routes (user-scoped, no workspace context needed):
+    let workspace_unguarded_routes = Router::new()
+        .route("/workspaces", get(list_user_workspaces_handler))
+        .route("/users/lookup", get(lookup_users_handler))
+        .layer(Extension(state.pool.clone()));
+
+    let workspace_routes = Router::new()
+        .merge(workspace_guarded_routes)
+        .merge(workspace_unguarded_routes)
+        .layer(Extension(Arc::new(WorkspaceService::new(state.pool.clone()))));
+
+    // ── Device routes (workspace-scoped RBAC for list, unguarded for register/update/delete) ──
+    let pool_for_devices = Arc::new(state.pool.clone());
+    let device_guarded_routes = Router::new()
+        .route("/devices", get(list_devices_handler))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            workspace_context_guard(req, next, pool_for_devices.clone())
+        }));
+
+    let device_unguarded_routes = Router::new()
+        .route("/devices", post(register_device_handler))
+        .route("/devices/:id", patch(update_device_handler))
+        .route("/devices/:id", delete(delete_device_handler));
+
+    let device_routes = Router::new()
+        .merge(device_guarded_routes)
+        .merge(device_unguarded_routes)
+        .layer(Extension(Arc::new(DeviceService::new(state.pool.clone()))))
+        .layer(Extension(state.session_registry.clone()));
+
+    // ── Notification routes ─────────────────────────────────────────────────
+    let notification_routes = Router::new()
+        .route("/notifications", get(list_notifications_handler))
+        .route("/notifications/read-all", patch(mark_all_read_handler))
+        .route("/notifications/:id/read", patch(mark_read_handler))
+        .layer(Extension(notification_service.clone()));
+
+    // ── Collaborator routes (account-level, NOT workspace-scoped) ────────────
+    // Teams gating and account-owner checks are enforced inside the service;
+    // `accept` is usable by any authenticated user (matched by their email).
+    let collaborator_routes = Router::new()
+        .route("/collaborators/invite", post(invite_handler))
+        .route("/collaborators", get(list_collaborators_handler))
+        .route("/collaborators/accept", post(accept_invite_handler))
+        .route(
+            "/collaborators/grants/:grant_id",
+            delete(delete_grant_handler),
+        )
+        .route(
+            "/collaborators/:user_id/grants",
+            get(list_grants_handler).post(upsert_grant_handler),
+        )
+        .route(
+            "/collaborators/:user_id",
+            delete(remove_collaborator_handler),
+        )
+        .layer(Extension(Arc::new(CollaboratorService::new(
+            state.pool.clone(),
+            state.config.clone(),
+        ))))
+        .layer(Extension(state.pool.clone()));
 
     // ── Authenticated routes (with per-group middleware) ─────────────────────
     // These route groups require authentication and per-user rate limiting.
@@ -259,6 +426,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(admin_routes)
         .merge(subscription_routes)
         .merge(team_routes)
+        .merge(workspace_routes)
+        .merge(device_routes)
+        .merge(notification_routes)
+        .merge(collaborator_routes)
         .merge(auth_protected_routes)
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter.clone(),
@@ -275,6 +446,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(health_routes)
         .merge(auth_routes)
         .merge(webhook_routes)
+        .merge(ws_route)
         .merge(authenticated_routes);
 
     // ── Global middleware (applied outermost, runs first) ───────────────────
@@ -371,4 +543,71 @@ async fn ready_handler(
 /// Returns 501 Not Implemented.
 async fn todo_handler() -> StatusCode {
     StatusCode::NOT_IMPLEMENTED
+}
+
+/// GET /plans
+///
+/// Returns the static list of available subscription plans.
+/// Public endpoint — no auth required.
+async fn plans_handler() -> impl IntoResponse {
+    let plans = serde_json::json!([
+        {
+            "id": "free",
+            "name": "Free",
+            "price_monthly": 0,
+            "price_yearly": 0,
+            "currency": "USD",
+            "features": {
+                "max_snippets": 10,
+                "max_folders": 3,
+                "max_devices": 2,
+                "max_workspaces": 1,
+                "ai_requests_per_day": 50,
+                "sync": true,
+                "realtime_sync": false,
+                "team_members": 1,
+                "audit_logs": false
+            }
+        },
+        {
+            "id": "pro",
+            "name": "Pro",
+            "price_monthly": 9.99,
+            "price_yearly": 99.99,
+            "currency": "USD",
+            "features": {
+                "max_snippets": -1,
+                "max_folders": -1,
+                "max_devices": 5,
+                "max_workspaces": 3,
+                "ai_requests_per_day": 1000,
+                "sync": true,
+                "realtime_sync": true,
+                "team_members": 1,
+                "audit_logs": false
+            }
+        },
+        {
+            "id": "teams",
+            "name": "Teams",
+            "price_monthly": 29.00,
+            "price_yearly": 290.00,
+            "currency": "USD",
+            "per_user": true,
+            "features": {
+                "max_snippets": -1,
+                "max_folders": -1,
+                "max_devices": -1,
+                "max_workspaces": -1,
+                "ai_requests_per_day": 1000,
+                "sync": true,
+                "realtime_sync": true,
+                "team_members": -1,
+                "rbac": true,
+                "audit_logs": true,
+                "sso": false
+            }
+        }
+    ]);
+    (StatusCode::OK, Json(plans))
 }

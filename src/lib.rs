@@ -6,13 +6,16 @@
 pub mod admin;
 pub mod ai;
 pub mod auth;
+pub mod collaborators;
 pub mod config;
 pub mod db;
+pub mod devices;
 pub mod email;
 pub mod errors;
 pub mod logging;
 pub mod middleware;
 pub mod models;
+pub mod notifications;
 pub mod router;
 pub mod scheduler;
 pub mod subscription;

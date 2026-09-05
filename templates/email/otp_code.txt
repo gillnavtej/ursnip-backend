@@ -1,0 +1,15 @@
+Verify Your Email
+=================
+
+Hi,
+
+Use the verification code below to finish setting up your account:
+
+{{ code }}
+
+This code expires in {{ expiry_minutes }} minutes.
+
+If you didn't create an account, you can safely ignore this email.
+
+---
+© {{ app_name }}. All rights reserved.

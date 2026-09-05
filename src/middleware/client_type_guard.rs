@@ -26,11 +26,9 @@ use crate::models::ClientType;
 
 /// Rules mapping path prefixes to the required client type.
 const CLIENT_TYPE_RULES: &[(&str, ClientType)] = &[
-    ("/sync/", ClientType::Native),
     ("/subscriptions/", ClientType::Web),
     ("/teams/", ClientType::Web),
     ("/admin/", ClientType::Web),
-    ("/ai/", ClientType::Native),
 ];
 
 /// Middleware function that enforces client type restrictions per route prefix.

@@ -12,6 +12,9 @@ use crate::config::AppConfig;
 /// logs a FATAL error and terminates the process with exit code 1.
 ///
 /// Sets `statement_timeout` on every new connection via `after_connect`.
+///
+/// Neon-compatible: works with `?sslmode=require` in the DATABASE_URL.
+/// For Neon serverless, use their pooling endpoint for high-concurrency workloads.
 pub async fn init_pool(config: &AppConfig) -> PgPool {
     let statement_timeout_ms = config.database_statement_timeout_secs * 1000;
 

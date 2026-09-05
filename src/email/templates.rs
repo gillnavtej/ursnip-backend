@@ -37,6 +37,45 @@ pub fn password_reset_email(to: &str, reset_link: &str, app_name: &str) -> Email
     }
 }
 
+// --- OTP Code ---
+
+#[derive(Template)]
+#[template(path = "email/otp_code.html")]
+struct OtpCodeHtml<'a> {
+    code: &'a str,
+    expiry_minutes: i64,
+    app_name: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "email/otp_code.txt")]
+struct OtpCodeText<'a> {
+    code: &'a str,
+    expiry_minutes: i64,
+    app_name: &'a str,
+}
+
+/// Build an OTP verification-code email with both HTML and plaintext bodies.
+pub fn otp_code_email(to: &str, code: &str, expiry_minutes: i64, app_name: &str) -> EmailMessage {
+    let html_template = OtpCodeHtml {
+        code,
+        expiry_minutes,
+        app_name,
+    };
+    let text_template = OtpCodeText {
+        code,
+        expiry_minutes,
+        app_name,
+    };
+
+    EmailMessage {
+        to: to.to_string(),
+        subject: format!("{} — Your verification code", app_name),
+        html_body: html_template.render().expect("failed to render otp_code HTML template"),
+        text_body: text_template.render().expect("failed to render otp_code text template"),
+    }
+}
+
 // --- Email Change Verify ---
 
 #[derive(Template)]
@@ -191,6 +230,54 @@ pub fn team_invite_email(
     }
 }
 
+// --- Collaborator Invite ---
+
+#[derive(Template)]
+#[template(path = "email/collaborator_invite.html")]
+struct CollaboratorInviteHtml<'a> {
+    invite_link: &'a str,
+    owner_name: &'a str,
+    app_name: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "email/collaborator_invite.txt")]
+struct CollaboratorInviteText<'a> {
+    invite_link: &'a str,
+    owner_name: &'a str,
+    app_name: &'a str,
+}
+
+/// Build an account-level collaborator-invite email with both HTML and plaintext bodies.
+pub fn collaborator_invite_email(
+    to: &str,
+    invite_link: &str,
+    owner_name: &str,
+    app_name: &str,
+) -> EmailMessage {
+    let html_template = CollaboratorInviteHtml {
+        invite_link,
+        owner_name,
+        app_name,
+    };
+    let text_template = CollaboratorInviteText {
+        invite_link,
+        owner_name,
+        app_name,
+    };
+
+    EmailMessage {
+        to: to.to_string(),
+        subject: format!("{} — You've Been Invited to Collaborate", app_name),
+        html_body: html_template
+            .render()
+            .expect("failed to render collaborator_invite HTML template"),
+        text_body: text_template
+            .render()
+            .expect("failed to render collaborator_invite text template"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +291,17 @@ mod tests {
         assert!(msg.text_body.contains("https://app.example.com/reset?token=abc123"));
         assert!(msg.html_body.contains("30 minutes"));
         assert!(msg.text_body.contains("30 minutes"));
+    }
+
+    #[test]
+    fn test_otp_code_email_renders() {
+        let msg = otp_code_email("user@example.com", "123456", 10, "Ursnip");
+        assert_eq!(msg.to, "user@example.com");
+        assert_eq!(msg.subject, "Ursnip — Your verification code");
+        assert!(msg.html_body.contains("123456"));
+        assert!(msg.text_body.contains("123456"));
+        assert!(msg.html_body.contains("10 minutes"));
+        assert!(msg.text_body.contains("10 minutes"));
     }
 
     #[test]
@@ -244,5 +342,21 @@ mod tests {
         assert!(msg.html_body.contains("My Workspace"));
         assert!(msg.text_body.contains("7 days"));
         assert!(msg.subject.contains("My Workspace"));
+    }
+
+    #[test]
+    fn test_collaborator_invite_email_renders() {
+        let msg = collaborator_invite_email(
+            "collab@example.com",
+            "https://app.example.com/collaborators/accept?token=c1",
+            "Alice",
+            "Ursnip",
+        );
+        assert_eq!(msg.to, "collab@example.com");
+        assert!(msg.html_body.contains("Alice"));
+        assert!(msg.html_body.contains("https://app.example.com/collaborators/accept?token=c1"));
+        assert!(msg.text_body.contains("Alice"));
+        assert!(msg.text_body.contains("7 days"));
+        assert!(msg.subject.contains("Invited to Collaborate"));
     }
 }
