@@ -185,7 +185,10 @@ impl SubscriptionService {
     /// For pro/teams: no limits (Requirement 5.21, 5.23).
     ///
     /// `content_length` is provided when creating/updating a snippet to validate
-    /// the content character limit.
+    /// the content character limit. It MUST be the count of UTF-16 code units
+    /// (i.e. `content.encode_utf16().count()`), matching the client's
+    /// `String.length` and the enforcement in `sync::service`, not the byte
+    /// length — otherwise multi-byte content is rejected too early.
     ///
     /// This should be called before creating a new snippet or folder.
     pub async fn enforce_tier_limits(
@@ -241,6 +244,10 @@ impl SubscriptionService {
     ///
     /// Call this before creating a new snippet. Checks both the snippet count
     /// limit and content character limit for the free tier.
+    ///
+    /// `content_length` MUST be the count of UTF-16 code units
+    /// (`content.encode_utf16().count()`) to match the client and the
+    /// `sync::service` enforcement, not the byte length.
     pub async fn enforce_snippet_limits(
         &self,
         workspace_id: Uuid,
@@ -779,6 +786,33 @@ impl SubscriptionService {
         // Step 4: Self-referral check
         if referrer_id == referred_user_id {
             return Err(AppError::SelfReferralNotAllowed);
+        }
+
+        // Step 4b: Paid-tier gate — only referrers on an active pro/teams
+        // subscription (via their individual workspace) may send referrals.
+        // Free tier or no active subscription → reject, create no referral row
+        // (Requirements 12.1, 12.2, 12.3).
+        let referrer_tier: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT s.tier
+            FROM subscriptions s
+            INNER JOIN workspaces w ON w.id = s.workspace_id
+            WHERE w.owner_id = $1
+              AND w.type = 'individual'
+              AND s.status = 'active'
+            LIMIT 1
+            "#,
+        )
+        .bind(referrer_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        match referrer_tier.as_deref() {
+            // Active pro/teams referrer → proceed to record the referral
+            // (Requirement 12.4).
+            Some("pro") | Some("teams") => {}
+            _ => return Err(AppError::ReferrerNotOnPaidPlan),
         }
 
         // Step 5: Check if referral already exists for this pair

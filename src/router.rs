@@ -75,6 +75,8 @@ use crate::sync::handlers::{
 };
 use crate::sync::service::SyncService;
 use crate::sync::session_registry::SessionRegistry;
+use crate::sharing::handlers::share_snippet_handler;
+use crate::sharing::service::SharingService;
 use crate::workspace::handlers::{
     create_invite_handler, create_team_handler, get_team_handler, join_via_invite_handler,
     list_members_handler, remove_member_handler,
@@ -83,16 +85,20 @@ use crate::workspace::handlers::{
     get_member_permissions_handler, update_member_permissions_handler, reset_member_permissions_handler,
 };
 use crate::workspace::service::{TeamService, WorkspaceService};
-use crate::ai::AiService;
-use crate::ai::handlers::{expand_handler, generate_handler, improve_handler};
 use crate::devices::handlers::{
     list_devices_handler, register_device_handler, update_device_handler, delete_device_handler,
 };
 use crate::devices::service::DeviceService;
 use crate::notifications::handlers::{
-    list_notifications_handler, mark_read_handler, mark_all_read_handler,
+    broadcast_promotional_handler, list_notifications_handler, mark_read_handler,
+    mark_all_read_handler,
+};
+use crate::notifications::preferences::{
+    get_preferences_handler, update_preferences_handler, NotificationPreferencesService,
 };
 use crate::notifications::service::NotificationService;
+use crate::billing::handlers::{add_seat_handler, list_seats_handler, remove_seat_handler};
+use crate::billing::BillingService;
 use crate::subscription::handlers::{
     activate_subscription_handler, add_seats_handler, billing_webhook_handler,
     cancel_subscription_handler, checkout_handler, current_subscription_handler,
@@ -187,7 +193,7 @@ pub fn build_router(state: AppState) -> Router {
         .layer(Extension(state.config.clone()))
         .layer(Extension(state.pool.clone()));
 
-    // ── Sync routes (native only, elevated body limit, workspace-scoped RBAC) ──
+    // ── Sync routes (elevated body limit, workspace-scoped RBAC) ──
     // Guarded routes require X-Workspace-ID header (reads from header or query param):
     let pool_for_sync = Arc::new(state.pool.clone());
     let sync_guarded_routes = Router::new()
@@ -227,22 +233,21 @@ pub fn build_router(state: AppState) -> Router {
         .layer(Extension(state.pool.clone()));
 
     let notification_service = Arc::new(NotificationService::new(state.pool.clone()));
+    let notification_preferences_service =
+        Arc::new(NotificationPreferencesService::new(state.pool.clone()));
+
+    // Shared SyncService reused by both the sync routes and the sharing service
+    // (SharingService delegates copy creation to SyncService for trigger-uniqueness
+    // and tier content-size enforcement).
+    let sync_service = Arc::new(SyncService::new(state.pool.clone()));
 
     let sync_routes = Router::new()
         .merge(sync_guarded_routes)
         .merge(sync_unguarded_routes)
-        .layer(Extension(Arc::new(SyncService::new(state.pool.clone()))))
+        .layer(Extension(sync_service.clone()))
         .layer(Extension(state.session_registry.clone()))
         .layer(Extension(notification_service.clone()))
         .layer(body_limit_layer(SYNC_BODY_LIMIT));
-
-    // ── AI routes (native only) ─────────────────────────────────────────────
-    let ai_routes = Router::new()
-        .route("/ai/expand", post(expand_handler))
-        .route("/ai/generate", post(generate_handler))
-        .route("/ai/improve", post(improve_handler))
-        .layer(Extension(Arc::new(AiService::new(state.pool.clone(), state.config.clone()))));
-
 
     // ── Admin routes (web only, admin role required) ─────────────────────────
     let admin_routes = Router::new()
@@ -289,8 +294,12 @@ pub fn build_router(state: AppState) -> Router {
         // Stats
         .route("/admin/stats/overview", get(overview_stats_handler))
         .route("/admin/stats/referrals", get(referral_analytics_handler))
+        // Promotional broadcast (fans out promotional notifications to targeted
+        // users who have not opted out — Req 25.1)
+        .route("/admin/notifications/promotional", post(broadcast_promotional_handler))
         .layer(Extension(Arc::new(AdminService::new(state.pool.clone(), Some(state.session_registry.clone())))))
         .layer(Extension(Arc::new(AuthService::new(state.pool.clone(), state.config.clone()))))
+        .layer(Extension(notification_service.clone()))
         .layer(Extension(state.pool.clone()))
         .layer(axum::middleware::from_fn(admin_guard));
 
@@ -301,10 +310,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/subscriptions/checkout", post(checkout_handler))
         .route("/subscriptions/activate", post(activate_subscription_handler))
         .route("/subscriptions/cancel", post(cancel_subscription_handler))
-        .route("/subscriptions/add-seats", post(add_seats_handler))
+        .route("/subscriptions/add-seats", post(add_seats_handler)) // legacy — kept for compatibility
+        // Per-seat management (workspace-scoped, owner-only via check_role_owner
+        // in the handlers). axum requires one route entry per path, so the two
+        // `/subscriptions/seats` methods are combined.
+        .route(
+            "/subscriptions/seats",
+            post(add_seat_handler).get(list_seats_handler),
+        )
+        .route("/subscriptions/seats/:seat_id", delete(remove_seat_handler))
         .route("/subscriptions/current", get(current_subscription_handler))
         .route("/subscriptions/transactions", get(list_transactions_handler))
         .layer(Extension(Arc::new(SubscriptionService::new(state.pool.clone(), state.config.clone()))))
+        .layer(Extension(Arc::new(BillingService::new(state.pool.clone()))))
         .layer(Extension(state.pool.clone()))
         .layer(Extension(state.config.clone()))
         .layer(axum::middleware::from_fn(move |req, next| {
@@ -392,6 +410,27 @@ pub fn build_router(state: AppState) -> Router {
         .route("/notifications/:id/read", patch(mark_read_handler))
         .layer(Extension(notification_service.clone()));
 
+    let notification_preferences_routes = Router::new()
+        .route(
+            "/notifications/preferences",
+            get(get_preferences_handler).put(update_preferences_handler),
+        )
+        .layer(Extension(notification_preferences_service.clone()));
+
+    // ── Sharing routes (workspace-scoped RBAC) ───────────────────────────────
+    // The source workspace is guarded by `workspace_context_guard` (requesting
+    // user must have access to the source snippet's workspace); recipient
+    // workspace membership is validated inside the service.
+    let sharing_service = Arc::new(SharingService::new(state.pool.clone(), sync_service.clone()));
+    let pool_for_sharing = Arc::new(state.pool.clone());
+    let sharing_routes = Router::new()
+        .route("/sharing/snippets", post(share_snippet_handler))
+        .layer(Extension(sharing_service.clone()))
+        .layer(Extension(state.pool.clone()))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            workspace_context_guard(req, next, pool_for_sharing.clone())
+        }));
+
     // ── Collaborator routes (account-level, NOT workspace-scoped) ────────────
     // Teams gating and account-owner checks are enforced inside the service;
     // `accept` is usable by any authenticated user (matched by their email).
@@ -422,13 +461,14 @@ pub fn build_router(state: AppState) -> Router {
     let jwt_secret_clone = jwt_secret.clone();
     let authenticated_routes = Router::new()
         .merge(sync_routes)
-        .merge(ai_routes)
         .merge(admin_routes)
         .merge(subscription_routes)
         .merge(team_routes)
         .merge(workspace_routes)
         .merge(device_routes)
         .merge(notification_routes)
+        .merge(notification_preferences_routes)
+        .merge(sharing_routes)
         .merge(collaborator_routes)
         .merge(auth_protected_routes)
         .layer(axum::middleware::from_fn_with_state(

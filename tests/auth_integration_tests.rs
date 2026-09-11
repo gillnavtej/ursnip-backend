@@ -23,7 +23,7 @@ use sha2::{Sha256, Digest};
 
 use ursnip_backend::config::{AppConfig, EmailProviderType};
 use ursnip_backend::auth::service::{
-    AuthService, RegisterRequest, LoginRequest, RefreshRequest, LogoutRequest,
+    AuthService, RegisterRequest, VerifyOtpRequest, LoginRequest, RefreshRequest, LogoutRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
 };
 use ursnip_backend::auth::oauth::{OAuthProvider, OAuthService};
@@ -49,8 +49,6 @@ fn test_config() -> Arc<AppConfig> {
         github_client_id: "test-github-client-id".to_string(),
         github_client_secret: "test-github-client-secret".to_string(),
         oauth_redirect_base_url: "http://localhost:3000".to_string(),
-        ai_provider_url: "http://localhost:9999/ai".to_string(),
-        ai_provider_key: "test-ai-key".to_string(),
         billing_webhook_secret: "test-billing-secret".to_string(),
         email_from_address: "test@example.com".to_string(),
         seed_admin_email: "admin@example.com".to_string(),
@@ -73,10 +71,12 @@ fn test_config() -> Arc<AppConfig> {
         cors_allowed_origins: vec![],
         trusted_proxy_cidrs: vec![],
         ws_max_connections: 100,
-        ai_max_concurrent_requests: 10,
         shutdown_timeout_secs: 5,
         billing_success_url: None,
         billing_cancel_url: None,
+        paddle_api_key: None,
+        paddle_environment: "sandbox".to_string(),
+        frontend_url: "http://localhost:3000".to_string(),
     })
 }
 
@@ -109,14 +109,78 @@ fn create_auth_service(pool: PgPool) -> AuthService {
     AuthService::new(pool, config)
 }
 
-/// Helper: register a user and return the auth response.
-async fn register_user(service: &AuthService, email: &str, password: &str) -> ursnip_backend::auth::service::AuthResponse {
-    service.register(RegisterRequest {
+/// Helper: register a user, complete email-OTP verification, and return the
+/// resulting auth response.
+///
+/// The current signup flow issues no tokens at `register` time — it returns a
+/// `RegisterResponse { verification_required, email }` and emails a 6-digit OTP.
+/// Tokens are only minted once the user verifies that OTP via `verify_otp`.
+/// Since the plaintext OTP is emailed (and only its hash is stored), the test
+/// injects a known code directly into `otp_codes` (mirroring how the password
+/// reset test injects a known reset token) and then verifies it to obtain the
+/// standard `AuthResponse` the rest of the suite relies on.
+async fn register_user(
+    pool: &PgPool,
+    service: &AuthService,
+    email: &str,
+    password: &str,
+) -> ursnip_backend::auth::service::AuthResponse {
+    let reg = service.register(RegisterRequest {
         email: email.to_string(),
         password: password.to_string(),
         client_type: ClientType::Native,
         referral_code: None,
-    }).await.expect("Registration should succeed")
+        first_name: None,
+        last_name: None,
+    }).await.expect("Registration should succeed");
+    assert!(reg.verification_required, "Signup should require OTP verification");
+    assert_eq!(reg.email, email);
+
+    complete_otp_verification(pool, service, email).await
+}
+
+/// Inject a known OTP for the just-registered (unverified) user and verify it,
+/// returning the issued `AuthResponse`. Kept separate so validation tests that
+/// only need the `register` call can avoid the verification step.
+async fn complete_otp_verification(
+    pool: &PgPool,
+    service: &AuthService,
+    email: &str,
+) -> ursnip_backend::auth::service::AuthResponse {
+    let user_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL"
+    )
+    .bind(email)
+    .fetch_one(pool)
+    .await
+    .expect("Registered user should exist");
+
+    // Invalidate any codes the register flow emailed, then inject a known one.
+    let known_code = "123456";
+    let code_hash = hash_token(known_code);
+    let expires_at = Utc::now() + Duration::minutes(30);
+
+    sqlx::query("UPDATE otp_codes SET used = true WHERE user_id = $1 AND used = false")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("Should invalidate existing OTP codes");
+
+    sqlx::query(
+        "INSERT INTO otp_codes (user_id, code_hash, expires_at) VALUES ($1, $2, $3)"
+    )
+    .bind(user_id)
+    .bind(&code_hash)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .expect("Should insert known OTP code");
+
+    service.verify_otp(VerifyOtpRequest {
+        email: email.to_string(),
+        code: known_code.to_string(),
+        client_type: ClientType::Native,
+    }).await.expect("OTP verification should succeed")
 }
 
 /// Helper: login a user and return the auth response.
@@ -178,7 +242,7 @@ async fn test_register_login_refresh_logout_flow() {
     let password = "securepass123";
 
     // 1. Register
-    let reg_response = register_user(&service, &email, password).await;
+    let reg_response = register_user(&pool, &service, &email, password).await;
     assert!(!reg_response.access_token.is_empty(), "Access token should be issued");
     assert!(!reg_response.refresh_token.is_empty(), "Refresh token should be issued");
     assert_eq!(reg_response.user.email, email);
@@ -281,7 +345,7 @@ async fn test_brute_force_lockout_and_unlock() {
     let password = "correctpassword1";
 
     // Register a user first
-    register_user(&service, &email, password).await;
+    register_user(&pool, &service, &email, password).await;
 
     // Attempt 5 failed logins with wrong password
     for i in 0..5 {
@@ -359,7 +423,7 @@ async fn test_password_reset_full_flow() {
     let new_password = "newpassword456";
 
     // Register a user
-    register_user(&service, &email, old_password).await;
+    register_user(&pool, &service, &email, old_password).await;
 
     // 1. Request password reset
     service.forgot_password(ForgotPasswordRequest {
@@ -457,7 +521,7 @@ async fn test_account_deletion_and_reactivation() {
     let password = "deletetest123";
 
     // Register a user
-    let reg = register_user(&service, &email, password).await;
+    let reg = register_user(&pool, &service, &email, password).await;
     let user_id = reg.user.id;
 
     // 1. Delete account
@@ -535,7 +599,7 @@ async fn test_session_limit_enforcement() {
     let password = "sessiontest1";
 
     // Register a user
-    let reg = register_user(&service, &email, password).await;
+    let reg = register_user(&pool, &service, &email, password).await;
     let user_id = reg.user.id;
 
     // Login creates the first session (registration already created one)
@@ -597,7 +661,7 @@ async fn test_token_reuse_detection() {
     let password = "reusetest123";
 
     // Register
-    let reg = register_user(&service, &email, password).await;
+    let reg = register_user(&pool, &service, &email, password).await;
     let original_token = reg.refresh_token;
 
     // Refresh to get a new token (original is now revoked)
@@ -660,11 +724,13 @@ async fn test_registration_validation() {
         password: "short".to_string(),
         client_type: ClientType::Native,
         referral_code: None,
+        first_name: None,
+        last_name: None,
     }).await;
     assert!(short_pw_result.is_err(), "Short password should be rejected");
 
     // 2. Register with valid password
-    register_user(&service, &email, "validpass1").await;
+    register_user(&pool, &service, &email, "validpass1").await;
 
     // Duplicate email
     let dup_result = service.register(RegisterRequest {
@@ -672,6 +738,8 @@ async fn test_registration_validation() {
         password: "anotherpass1".to_string(),
         client_type: ClientType::Web,
         referral_code: None,
+        first_name: None,
+        last_name: None,
     }).await;
     assert!(dup_result.is_err(), "Duplicate email should be rejected");
 
@@ -692,7 +760,7 @@ async fn test_login_wrong_credentials() {
     let email = unique_email();
     let password = "correctpass1";
 
-    register_user(&service, &email, password).await;
+    register_user(&pool, &service, &email, password).await;
 
     // Wrong password
     let start = std::time::Instant::now();

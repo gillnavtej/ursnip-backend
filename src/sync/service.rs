@@ -19,10 +19,12 @@ const PRO_TIER_MAX_SNIPPETS: i64 = 100;
 /// Maximum number of snippets allowed on the teams tier.
 const TEAMS_TIER_MAX_SNIPPETS: i64 = 100;
 
-/// Maximum content length (in characters) allowed on the free tier.
+/// Maximum content length allowed on the free tier, measured in UTF-16 code
+/// units to match the client's `String.length` count of the stored HTML.
 const FREE_TIER_MAX_CONTENT_CHARS: usize = 10000;
 
-/// Maximum content length (in characters) allowed on pro/teams tiers.
+/// Maximum content length allowed on pro/teams tiers, measured in UTF-16 code
+/// units to match the client's `String.length` count of the stored HTML.
 const PRO_TIER_MAX_CONTENT_CHARS: usize = 30000;
 
 /// Default limit for delta polling pagination.
@@ -45,6 +47,19 @@ const TEAMS_TIER_MAX_FOLDERS: i64 = 25;
 
 /// Maximum number of items allowed in a single batch operation.
 const MAX_BATCH_SIZE: usize = 100;
+
+/// Returns `true` if `candidate` conflicts with any trigger in `existing` by a
+/// prefix relationship — that is, one string is a prefix of the other (e.g.
+/// `/csv` vs `/csv-contact`). Exact matches are treated as a conflict here too,
+/// but callers handle exact duplicates separately as `TriggerAlreadyExists`.
+///
+/// Typing the shorter trigger would ambiguously match the longer one, so such
+/// pairs are not allowed to coexist in a workspace.
+fn triggers_have_prefix_conflict(candidate: &str, existing: &[String]) -> bool {
+    existing.iter().any(|other| {
+        candidate.starts_with(other.as_str()) || other.starts_with(candidate)
+    })
+}
 
 // ─── Request DTOs ───────────────────────────────────────────────────────────────
 
@@ -509,8 +524,16 @@ impl SyncService {
         let is_soft_locked =
             *status == SubscriptionStatus::Cancelled || *status == SubscriptionStatus::Deactivated;
 
-        // Enforce content length limit
-        if content.len() > max_content_chars {
+        // Enforce content length limit.
+        //
+        // Count UTF-16 code units (not bytes) so the limit matches the client,
+        // which measures the stored HTML with JavaScript's `String.length`
+        // (UTF-16 code units). Using `content.len()` (bytes) would reject
+        // multi-byte content — emoji, accented or non-Latin characters — far
+        // earlier than the advertised character count. Rejection is `>=` to
+        // mirror the client, which blocks saving at exactly the limit.
+        let content_char_count = content.encode_utf16().count();
+        if content_char_count >= max_content_chars {
             if is_soft_locked {
                 return Err(AppError::ContentSoftLocked);
             }
@@ -586,6 +609,47 @@ impl SyncService {
 
         if exists {
             return Err(AppError::TriggerAlreadyExists);
+        }
+
+        // Prefix-conflict check: no two triggers in a workspace may be such that
+        // one is a prefix of the other (e.g. `/csv` and `/csv-contact`), because
+        // typing the shorter one would ambiguously match the longer one. Exact
+        // matches are already handled above as TriggerAlreadyExists.
+        //
+        // The prefix relationship is evaluated in Rust rather than via SQL LIKE
+        // to avoid escaping the metacharacters (`%`, `_`) that legitimately
+        // appear in triggers. The candidate set is every other live trigger in
+        // the workspace, which is small and workspace-scoped.
+        let sibling_triggers: Vec<String> = match exclude_snippet_id {
+            Some(exclude_id) => {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT trigger FROM snippets
+                    WHERE workspace_id = $1 AND deleted_at IS NULL AND id != $2
+                    "#,
+                )
+                .bind(workspace_id)
+                .bind(exclude_id)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(|_| AppError::InternalError)?
+            }
+            None => {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT trigger FROM snippets
+                    WHERE workspace_id = $1 AND deleted_at IS NULL
+                    "#,
+                )
+                .bind(workspace_id)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(|_| AppError::InternalError)?
+            }
+        };
+
+        if triggers_have_prefix_conflict(trigger, &sibling_triggers) {
+            return Err(AppError::TriggerPrefixConflict);
         }
 
         Ok(())
@@ -912,7 +976,10 @@ impl SyncService {
         .bind(snippet_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| { eprintln!("[UPDATE SNIPPET ERROR] {e:?}"); AppError::InternalError })?;
+        .map_err(|e| {
+            tracing::error!("update snippet persist failed: {e}");
+            AppError::InternalError
+        })?;
 
         // Build delta payload
         let delta_payload = serde_json::json!({
@@ -2030,5 +2097,63 @@ impl SyncService {
             has_more,
             next_since_version,
         })
+    }
+}
+
+#[cfg(test)]
+mod prefix_conflict_tests {
+    use super::triggers_have_prefix_conflict;
+
+    fn owned(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_conflict_with_disjoint_triggers() {
+        let existing = owned(&["/hello", "/bye", "/csv"]);
+        assert!(!triggers_have_prefix_conflict("/greeting", &existing));
+    }
+
+    #[test]
+    fn no_conflict_against_empty_set() {
+        assert!(!triggers_have_prefix_conflict("/anything", &[]));
+    }
+
+    #[test]
+    fn conflict_when_candidate_is_prefix_of_existing() {
+        // Adding `/csv` when `/csv-contact` already exists.
+        let existing = owned(&["/csv-contact"]);
+        assert!(triggers_have_prefix_conflict("/csv", &existing));
+    }
+
+    #[test]
+    fn conflict_when_existing_is_prefix_of_candidate() {
+        // Adding `/csv-contact` when `/csv` already exists.
+        let existing = owned(&["/csv"]);
+        assert!(triggers_have_prefix_conflict("/csv-contact", &existing));
+    }
+
+    #[test]
+    fn conflict_on_exact_match() {
+        // Exact matches are also reported (callers handle these separately as
+        // TriggerAlreadyExists before reaching the prefix check).
+        let existing = owned(&["/csv"]);
+        assert!(triggers_have_prefix_conflict("/csv", &existing));
+    }
+
+    #[test]
+    fn no_conflict_for_shared_prefix_without_boundary() {
+        // `/csv` and `/csvx` are NOT a prefix pair in the trigger sense only if
+        // one is a strict prefix of the other — here `/csv` IS a prefix of
+        // `/csvx`, so this MUST be a conflict.
+        let existing = owned(&["/csvx"]);
+        assert!(triggers_have_prefix_conflict("/csv", &existing));
+    }
+
+    #[test]
+    fn no_conflict_for_sibling_triggers_sharing_leading_text() {
+        // Neither is a prefix of the other.
+        let existing = owned(&["/csv-a"]);
+        assert!(!triggers_have_prefix_conflict("/csv-b", &existing));
     }
 }

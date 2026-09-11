@@ -4,8 +4,8 @@
 //! integration tests in the `tests/` directory.
 
 pub mod admin;
-pub mod ai;
 pub mod auth;
+pub mod billing;
 pub mod collaborators;
 pub mod config;
 pub mod db;
@@ -18,6 +18,7 @@ pub mod models;
 pub mod notifications;
 pub mod router;
 pub mod scheduler;
+pub mod sharing;
 pub mod subscription;
 pub mod sync;
 pub mod workspace;

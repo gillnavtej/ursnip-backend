@@ -1,0 +1,977 @@
+{
+  "pbtResults": {
+    "6.2 Write property test for referral requiring an active paid referrer": {
+      "status": "passed",
+      "lastRunTimestamp": 1789020338712
+    },
+    "6.3 Write property test for eligible referrer recording a pending referral": {
+      "status": "passed",
+      "lastRunTimestamp": 1789020471048
+    },
+    "10.5 Write property test for expiry reminders firing at thresholds": {
+      "status": "passed",
+      "lastRunTimestamp": 1789026504009
+    },
+    "10.6 Write property test for expiry reminder idempotence": {
+      "status": "passed",
+      "lastRunTimestamp": 1789026504952
+    },
+    "10.7 Write property test for promotional opt-out": {
+      "status": "passed",
+      "lastRunTimestamp": 1789026506353
+    },
+    "11.2 Write property test for empty workspace name rejection": {
+      "status": "passed",
+      "lastRunTimestamp": 1789026507316
+    }
+  },
+  "executionHistory": {
+    "4.5 Write property test for unresolvable recipient": [
+      {
+        "executionId": "083c56c6-4cd5-4c15-bb99-eb2e02b8bf39",
+        "chatSessionId": "sess_57ffab15-96ed-4c06-9b5e-f959eda76ab5",
+        "timestamp": 1789018396297
+      },
+      {
+        "executionId": "083c56c6-4cd5-4c15-bb99-eb2e02b8bf39",
+        "chatSessionId": "sess_57ffab15-96ed-4c06-9b5e-f959eda76ab5",
+        "timestamp": 1789018556903
+      }
+    ],
+    "4.6 Write property test for trigger conflict": [
+      {
+        "executionId": "024a3650-25b3-437c-b1c1-96980941f32b",
+        "chatSessionId": "sess_4a3634c7-d32e-4bab-a4e1-1dff56741ef2",
+        "timestamp": 1789018577144
+      },
+      {
+        "executionId": "024a3650-25b3-437c-b1c1-96980941f32b",
+        "chatSessionId": "sess_4a3634c7-d32e-4bab-a4e1-1dff56741ef2",
+        "timestamp": 1789018775910
+      }
+    ],
+    "4.7 Write unit test for read-access authorization rejection": [
+      {
+        "executionId": "35531c41-894e-4a68-9c65-11c5117e67a3",
+        "chatSessionId": "sess_d3fe8838-5756-4f48-9228-ea457ade2e53",
+        "timestamp": 1789018793157
+      },
+      {
+        "executionId": "35531c41-894e-4a68-9c65-11c5117e67a3",
+        "chatSessionId": "sess_d3fe8838-5756-4f48-9228-ea457ade2e53",
+        "timestamp": 1789018912410
+      }
+    ],
+    "4. Snippet sharing backend (`ursnip-backend`)": [
+      {
+        "executionId": "35531c41-894e-4a68-9c65-11c5117e67a3",
+        "chatSessionId": "sess_d3fe8838-5756-4f48-9228-ea457ade2e53",
+        "timestamp": 1789018912504
+      }
+    ],
+    "5.1 Implement ImportService::parse": [
+      {
+        "executionId": "d10832f0-ef92-46b8-bdf5-6824decb8387",
+        "chatSessionId": "sess_111c39fb-1f70-4c82-be21-56cab65e059f",
+        "timestamp": 1789018972239
+      },
+      {
+        "executionId": "d10832f0-ef92-46b8-bdf5-6824decb8387",
+        "chatSessionId": "sess_111c39fb-1f70-4c82-be21-56cab65e059f",
+        "timestamp": 1789019103835
+      }
+    ],
+    "5.2 Wire parsed candidates to the batch endpoint and per-item reporting": [
+      {
+        "executionId": "58e88128-d994-45bd-b124-68efff1d1607",
+        "chatSessionId": "sess_12fae6e1-cf2b-4430-bfc0-40511d1f10d0",
+        "timestamp": 1789019152711
+      },
+      {
+        "executionId": "58e88128-d994-45bd-b124-68efff1d1607",
+        "chatSessionId": "sess_12fae6e1-cf2b-4430-bfc0-40511d1f10d0",
+        "timestamp": 1789019443392
+      }
+    ],
+    "5.3 Write property test for invalid import payload": [
+      {
+        "executionId": "130b9ad3-ae8f-4d35-ac1e-606a12813c28",
+        "chatSessionId": "sess_786d3f80-be20-429d-9473-d13dee939d8e",
+        "timestamp": 1789019459729
+      },
+      {
+        "executionId": "130b9ad3-ae8f-4d35-ac1e-606a12813c28",
+        "chatSessionId": "sess_786d3f80-be20-429d-9473-d13dee939d8e",
+        "timestamp": 1789019617012
+      }
+    ],
+    "5.4 Write integration test for import ingestion via batch endpoint": [
+      {
+        "executionId": "70cf01d1-8f06-4eb6-b0db-f1d4de5b01c4",
+        "chatSessionId": "sess_7b00fb2f-bb25-4f03-8e1e-6e4bb5ec3388",
+        "timestamp": 1789019636076
+      },
+      {
+        "executionId": "70cf01d1-8f06-4eb6-b0db-f1d4de5b01c4",
+        "chatSessionId": "sess_7b00fb2f-bb25-4f03-8e1e-6e4bb5ec3388",
+        "timestamp": 1789019970567
+      }
+    ],
+    "5. Import parsing backend (`ursnip-backend`)": [
+      {
+        "executionId": "70cf01d1-8f06-4eb6-b0db-f1d4de5b01c4",
+        "chatSessionId": "sess_7b00fb2f-bb25-4f03-8e1e-6e4bb5ec3388",
+        "timestamp": 1789019970647
+      }
+    ],
+    "6.1 Add the paid-tier gate in record_referral": [
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020001764
+      },
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020140199
+      }
+    ],
+    "6.2 Write property test for referral requiring an active paid referrer": [
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020202966
+      },
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020361450
+      }
+    ],
+    "6.3 Write property test for eligible referrer recording a pending referral": [
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020203768
+      },
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020489117
+      }
+    ],
+    "6. Referral Pro/Team gate (`ursnip-backend`)": [
+      {
+        "executionId": "175f6156-1cf1-4fea-9252-86f375e7d181",
+        "chatSessionId": "sess_426bbfeb-bd9b-4b3d-878c-96c7fb86f01e",
+        "timestamp": 1789020489167
+      }
+    ],
+    "7. Checkpoint - sharing, import, referral gate": [
+      {
+        "executionId": "e56de8f4-f7bb-4b17-bcb1-36c7307d6245",
+        "chatSessionId": "sess_de2198eb-ab57-4bd2-99c2-a8fcae0808e9",
+        "timestamp": 1789020536758
+      },
+      {
+        "executionId": "e56de8f4-f7bb-4b17-bcb1-36c7307d6245",
+        "chatSessionId": "sess_de2198eb-ab57-4bd2-99c2-a8fcae0808e9",
+        "timestamp": 1789020876292
+      }
+    ],
+    "8.1 Scaffold the billing module and service": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920558
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020932806
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789021120335
+      }
+    ],
+    "8.6 Write property test for over-period fixed durations creating no seat": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920645
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024773780
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025001004
+      }
+    ],
+    "8.7 Write property test for fixed-duration expiry equals start plus N months": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920713
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024775246
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025002385
+      }
+    ],
+    "8.8 Write property test for \"until plan lasts\" expiry": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920774
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024776349
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025003756
+      }
+    ],
+    "8.9 Write property test for allocation change on add/remove": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920824
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024777586
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025004710
+      }
+    ],
+    "8.10 Write property test for unsupported durations": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920872
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024778469
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025006108
+      }
+    ],
+    "8.11 Write property test for assigned seats not removable until cleared": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920923
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024779922
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025007044
+      }
+    ],
+    "8.12 Write unit tests for billing authorization rejections": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020920972
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024781217
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025008128
+      }
+    ],
+    "9. Checkpoint - billing backend": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921025
+      },
+      {
+        "executionId": "817424ba-f3c8-478b-8be1-8e6f7747b87b",
+        "chatSessionId": "sess_2bfcec6f-0028-4186-89d2-1675125900ab",
+        "timestamp": 1789025905720
+      },
+      {
+        "executionId": "817424ba-f3c8-478b-8be1-8e6f7747b87b",
+        "chatSessionId": "sess_2bfcec6f-0028-4186-89d2-1675125900ab",
+        "timestamp": 1789026098463
+      }
+    ],
+    "10.1 Wire workspace invite notifications": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921076
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025150377
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025552229
+      }
+    ],
+    "10.2 Wire subscription activation notification (non-blocking)": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921174
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025151143
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025553193
+      }
+    ],
+    "10.3 Wire device register/remove notifications (non-blocking)": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921251
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025152730
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025554565
+      }
+    ],
+    "10.4 Implement the expiry-reminder scheduler job": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921341
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025153710
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025556018
+      }
+    ],
+    "10.5 Write property test for expiry reminders firing at thresholds": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921394
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025562603
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025873873
+      }
+    ],
+    "10.6 Write property test for expiry reminder idempotence": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921444
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025564016
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025875153
+      }
+    ],
+    "10.7 Write property test for promotional opt-out": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921494
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025565019
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025876077
+      }
+    ],
+    "10.8 Write unit tests for triggered/non-blocking notification behavior": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921557
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025566065
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025877408
+      }
+    ],
+    "10.9 Implement promotional broadcast endpoint": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921643
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025154666
+      },
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025556780
+      }
+    ],
+    "11.1 Add explicit empty-name validation on create/update": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921696
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789021134412
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024240913
+      }
+    ],
+    "11.2 Write property test for empty workspace name rejection": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921755
+      },
+      {
+        "executionId": "9a6eeb4b-9f4e-4039-b896-0c2b01867b6e",
+        "chatSessionId": "sess_f91a02df-007f-4845-bb1f-3dedfdf5e980",
+        "timestamp": 1789026123832
+      },
+      {
+        "executionId": "9a6eeb4b-9f4e-4039-b896-0c2b01867b6e",
+        "chatSessionId": "sess_f91a02df-007f-4845-bb1f-3dedfdf5e980",
+        "timestamp": 1789026266799
+      }
+    ],
+    "12. Checkpoint - notification triggers, scheduler, workspace edge cases": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921807
+      },
+      {
+        "executionId": "d934484d-f5e5-4ae2-8c55-9b8557c53c80",
+        "chatSessionId": "sess_0d68f552-7ebd-4eaf-ae2b-030075f208c8",
+        "timestamp": 1789026287719
+      },
+      {
+        "executionId": "d934484d-f5e5-4ae2-8c55-9b8557c53c80",
+        "chatSessionId": "sess_0d68f552-7ebd-4eaf-ae2b-030075f208c8",
+        "timestamp": 1789026565844
+      }
+    ],
+    "13.1 Add sharing and import/export API clients": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921859
+      },
+      {
+        "executionId": "2af1add6-7bb6-4e83-8891-4eed0cfabf5c",
+        "chatSessionId": "sess_2505f169-7a7b-4ff6-b49d-562e704e3d71",
+        "timestamp": 1789026873134
+      },
+      {
+        "executionId": "2af1add6-7bb6-4e83-8891-4eed0cfabf5c",
+        "chatSessionId": "sess_2505f169-7a7b-4ff6-b49d-562e704e3d71",
+        "timestamp": 1789027038554
+      }
+    ],
+    "13.2 Add billing/seats and notification-preferences API clients": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921908
+      },
+      {
+        "executionId": "2af1add6-7bb6-4e83-8891-4eed0cfabf5c",
+        "chatSessionId": "sess_2505f169-7a7b-4ff6-b49d-562e704e3d71",
+        "timestamp": 1789026873999
+      },
+      {
+        "executionId": "2af1add6-7bb6-4e83-8891-4eed0cfabf5c",
+        "chatSessionId": "sess_2505f169-7a7b-4ff6-b49d-562e704e3d71",
+        "timestamp": 1789027039523
+      }
+    ],
+    "13.3 Wire teams API client to real endpoints": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020921958
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789021135063
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024241885
+      }
+    ],
+    "14.1 Implement the share dialog": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922008
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789027110846
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789027787358
+      }
+    ],
+    "14.2 Implement import/export UI with Tauri file I/O": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922058
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789027111983
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789027788502
+      }
+    ],
+    "14.3 Write property test for export/import round-trip fidelity": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922107
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789027794804
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789028060576
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032651604
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032811382
+      }
+    ],
+    "14.4 Write property test for whole-workspace export completeness": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922157
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789027794872
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789028060665
+      },
+      {
+        "executionId": "0333eaa3-cf2e-48be-9a4a-6b59e97f27b9",
+        "chatSessionId": "sess_d4470de3-7317-4e14-978e-e726678d8824",
+        "timestamp": 1789029847985
+      },
+      {
+        "executionId": "0333eaa3-cf2e-48be-9a4a-6b59e97f27b9",
+        "chatSessionId": "sess_d4470de3-7317-4e14-978e-e726678d8824",
+        "timestamp": 1789029936026
+      }
+    ],
+    "14.5 Write e2e tests for share dialog and import/export": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922207
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789028065835
+      },
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789028729323
+      },
+      {
+        "executionId": "3794e8bb-0e1a-45a2-91fd-c8979c07041e",
+        "chatSessionId": "sess_b66aa623-f063-44a4-ac79-6ad4b657d199",
+        "timestamp": 1789029970850
+      },
+      {
+        "executionId": "3794e8bb-0e1a-45a2-91fd-c8979c07041e",
+        "chatSessionId": "sess_b66aa623-f063-44a4-ac79-6ad4b657d199",
+        "timestamp": 1789030327754
+      }
+    ],
+    "15.1 Implement the add-seat dialog with duration picker and radio": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922256
+      },
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789030402594
+      },
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789030638476
+      }
+    ],
+    "15.2 Implement the remove-seat control with confirmation": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922349
+      },
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789030403081
+      },
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789030639426
+      }
+    ],
+    "15.3 Write e2e test for add-seat stepper/radio and remove-seat confirmation": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922396
+      },
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789030646032
+      },
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789031178296
+      }
+    ],
+    "16.1 Implement email-invite form and code-invite controls": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922454
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031399560
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031924663
+      }
+    ],
+    "16.2 Implement role assignment/change UI": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922507
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031400947
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031925613
+      }
+    ],
+    "16.3 Wire live teams page and member removal": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922558
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031401895
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031927214
+      }
+    ],
+    "16.4 Implement referral eligibility feedback": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922608
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031403132
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031927918
+      }
+    ],
+    "17.1 Implement server-backed preferences UI with security confirmation": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922656
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032404836
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032641198
+      }
+    ],
+    "18. Final checkpoint - full stack": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789020922709
+      }
+    ],
+    "8.2 Implement add_seat with expiry computation and inclusive boundary": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024248903
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024383833
+      }
+    ],
+    "8.3 Implement remove_seat and list_seats": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024510622
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024578950
+      }
+    ],
+    "8.4 Register billing endpoints and switch frontend target": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024580328
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024758985
+      }
+    ],
+    "8.5 Write property test for seat expiry inclusive boundary invariant": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789024772600
+      },
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025000015
+      }
+    ],
+    "8. Billing & seat management backend (`ursnip-backend`)": [
+      {
+        "executionId": "22880abf-dc33-45e5-bf2b-a15abc041c4e",
+        "chatSessionId": "sess_dc81ed87-339d-4a7c-ae46-86c8e0c56bda",
+        "timestamp": 1789025008175
+      }
+    ],
+    "10. Notification triggers and expiry-reminder scheduler (`ursnip-backend`)": [
+      {
+        "executionId": "8c1abd70-fe1b-4ef7-97c5-a1ce704e4e9e",
+        "chatSessionId": "sess_725b68d4-7299-44e6-890a-87cdbb9167c4",
+        "timestamp": 1789025877457
+      }
+    ],
+    "11. Workspace CRUD edge-case confirmation (`ursnip-backend`)": [
+      {
+        "executionId": "9a6eeb4b-9f4e-4039-b896-0c2b01867b6e",
+        "chatSessionId": "sess_f91a02df-007f-4845-bb1f-3dedfdf5e980",
+        "timestamp": 1789026266860
+      }
+    ],
+    "13. Frontend API clients (`ursnip-app`)": [
+      {
+        "executionId": "2af1add6-7bb6-4e83-8891-4eed0cfabf5c",
+        "chatSessionId": "sess_2505f169-7a7b-4ff6-b49d-562e704e3d71",
+        "timestamp": 1789027039585
+      }
+    ],
+    "14. Frontend snippet sharing and import/export UI (`ursnip-app`)": [
+      {
+        "executionId": "a74c4f1d-b7a0-4ed4-89ed-12363f1f0a5d",
+        "chatSessionId": "sess_1d706915-ad4c-49b2-a965-5c86bf8d0091",
+        "timestamp": 1789028729399
+      }
+    ],
+    "15. Frontend billing add/remove seat UI (`ursnip-app`)": [
+      {
+        "executionId": "82406d6c-7c9a-4e41-abcb-a94a3891ebf1",
+        "chatSessionId": "sess_1b1a7c08-9e24-4ad1-8a39-afbe3dcc1a17",
+        "timestamp": 1789031178395
+      }
+    ],
+    "16.5 Write e2e tests for teams and referral UI": [
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789031934035
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032395026
+      }
+    ],
+    "16. Frontend teams and referral UI (`ursnip-app`)": [
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032395114
+      }
+    ],
+    "17.2 Write e2e test for preferences persistence and security-disable confirmation": [
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032652500
+      },
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032812441
+      }
+    ],
+    "17. Frontend notification preferences UI (`ursnip-app`)": [
+      {
+        "executionId": "347d3cd8-2364-4d20-8c16-f27cd1a1b839",
+        "chatSessionId": "sess_a8f6747f-92c4-43ab-a886-f878e5b7674d",
+        "timestamp": 1789032812499
+      }
+    ]
+  }
+}

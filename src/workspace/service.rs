@@ -79,6 +79,11 @@ impl WorkspaceService {
         owner_id: Uuid,
         name: &str,
     ) -> Result<WorkspaceResponse, AppError> {
+        // Reject empty / whitespace-only names (Requirement 8.1)
+        if name.trim().is_empty() {
+            return Err(AppError::InvalidRequestBody);
+        }
+
         let mut tx = self
             .pool
             .begin()
@@ -147,6 +152,11 @@ impl WorkspaceService {
         owner_id: Uuid,
         name: &str,
     ) -> Result<WorkspaceResponse, AppError> {
+        // Reject empty / whitespace-only names (Requirement 8.1)
+        if name.trim().is_empty() {
+            return Err(AppError::InvalidRequestBody);
+        }
+
         // Enforce workspace count limit based on user's highest tier
         let workspace_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM workspaces WHERE owner_id = $1",
@@ -313,11 +323,16 @@ impl WorkspaceService {
         workspace_id: Uuid,
         name: Option<String>,
     ) -> Result<WorkspaceResponse, AppError> {
-        // Build update query dynamically (only name for now)
+        // Build update query dynamically (only name for now).
         let new_name = match name {
-            Some(ref n) if !n.is_empty() => n.as_str(),
-            _ => {
-                // Nothing to update, just return current state
+            // Name provided but empty / whitespace-only → reject (Requirement 8.1).
+            // This replaces the previous silent no-op behavior.
+            Some(ref n) if n.trim().is_empty() => {
+                return Err(AppError::InvalidRequestBody);
+            }
+            Some(ref n) => n.as_str(),
+            // Name omitted → nothing to update, return current state.
+            None => {
                 return self.get_workspace(workspace_id).await;
             }
         };

@@ -8,6 +8,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::notifications::service::{CreateNotification, NotificationService};
 
 // ─── DTOs ───────────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,43 @@ pub struct DeviceService {
 impl DeviceService {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Emit a System_Notification for a device management event (Requirement 24.1).
+    ///
+    /// Non-blocking (Requirement 24.2): the notification write is spawned as a
+    /// fire-and-forget background task so that a notification failure never
+    /// blocks or rolls back the device operation. A fresh `NotificationService`
+    /// is built from the pool — its `create` path applies the user's
+    /// notification preferences and bounded retry internally. Device events are
+    /// treated as security-relevant, so they survive a plain System opt-out.
+    fn emit_device_notification(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+        event_type: &'static str,
+        title: &'static str,
+        device_id: Uuid,
+        device_name: String,
+    ) {
+        let notifications = NotificationService::new(self.pool.clone());
+        let notif = CreateNotification {
+            user_id,
+            workspace_id,
+            event_type: event_type.to_string(),
+            title: title.to_string(),
+            description: Some(format!("Device \"{device_name}\".")),
+            metadata: Some(serde_json::json!({
+                "device_id": device_id,
+                "device_name": device_name,
+            })),
+            classification: Some("system".to_string()),
+        };
+        tokio::spawn(async move {
+            if let Err(e) = notifications.create(notif).await {
+                tracing::error!(error = %e, event = event_type, "Failed to emit device notification");
+            }
+        });
     }
 
     /// List all devices for a user in a workspace.
@@ -143,6 +181,16 @@ impl DeviceService {
         .await
         .map_err(|_| AppError::InternalError)?;
 
+        // Requirement 24.1/24.2: emit a non-blocking device-registered notification.
+        self.emit_device_notification(
+            user_id,
+            device.workspace_id,
+            "device_registered",
+            "New device registered",
+            device.id,
+            device.device_name.clone(),
+        );
+
         Ok(device)
     }
 
@@ -208,6 +256,25 @@ impl DeviceService {
         device_id: Uuid,
         user_id: Uuid,
     ) -> Result<(), AppError> {
+        // Load the device first so we can emit a device-removed notification
+        // (Requirement 24.1) with its workspace_id / name after a successful
+        // delete. Absence → 404 (reuses WorkspaceNotFound like update_device).
+        let existing = sqlx::query_as::<_, DeviceResponse>(
+            r#"
+            SELECT id, workspace_id, user_id, device_name, device_type, platform,
+                   last_sync_version, last_sync_at, is_active, created_at, updated_at
+            FROM devices
+            WHERE id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(device_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let existing = existing.ok_or(AppError::WorkspaceNotFound)?;
+
         let result = sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
             .bind(device_id)
             .bind(user_id)
@@ -218,6 +285,16 @@ impl DeviceService {
         if result.rows_affected() == 0 {
             return Err(AppError::WorkspaceNotFound);
         }
+
+        // Requirement 24.1/24.2: emit a non-blocking device-removed notification.
+        self.emit_device_notification(
+            user_id,
+            existing.workspace_id,
+            "device_removed",
+            "Device removed",
+            existing.id,
+            existing.device_name.clone(),
+        );
 
         Ok(())
     }

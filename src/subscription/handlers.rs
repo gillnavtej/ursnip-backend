@@ -25,6 +25,7 @@ use crate::middleware::auth_extractor::AccessTokenClaims;
 use crate::middleware::workspace_context::{
     check_role_owner, check_role_viewer, WorkspaceContext,
 };
+use crate::notifications::service::{persist_user_notification_async, NotificationService};
 use crate::subscription::service::{CheckoutRequest, SubscriptionService};
 use crate::subscription::webhook;
 
@@ -249,6 +250,34 @@ pub async fn activate_subscription_handler(
 
         if let Some(user_id) = owner_id {
             let _ = crate::auth::service::AuthService::convert_referral(&pool, user_id).await;
+
+            // Emit a System_Notification confirming the paid-tier activation
+            // (Requirement 22.1). Non-blocking: the activation has already been
+            // committed above and must not be failed or rolled back if the
+            // notification write fails (Requirement 22.2). `create` applies the
+            // owner's preferences and bounded retry internally.
+            let tier: Option<String> = sqlx::query_scalar(
+                "SELECT tier FROM subscriptions WHERE workspace_id = $1",
+            )
+            .bind(body.workspace_id)
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
+
+            let notif_service = Arc::new(NotificationService::new(pool.clone()));
+            persist_user_notification_async(
+                notif_service,
+                user_id,
+                body.workspace_id,
+                "subscription_activated".to_string(),
+                "Subscription activated".to_string(),
+                Some("Your paid subscription is now active.".to_string()),
+                Some(serde_json::json!({
+                    "workspace_id": body.workspace_id.to_string(),
+                    "tier": tier,
+                })),
+            );
         }
     }
 

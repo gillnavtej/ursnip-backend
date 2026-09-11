@@ -200,6 +200,35 @@ async fn apply_subscription_transition(
 
             if let Some(user_id) = owner_id {
                 let _ = crate::auth::service::AuthService::convert_referral(pool, user_id).await;
+
+                // Emit a System_Notification confirming the paid-tier activation
+                // (Requirement 22.1). Non-blocking: the activation is already
+                // committed and must not be failed on a notification error
+                // (Requirement 22.2).
+                let tier: Option<String> = sqlx::query_scalar(
+                    "SELECT tier FROM subscriptions WHERE workspace_id = $1",
+                )
+                .bind(workspace_id)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
+
+                let notif_service = std::sync::Arc::new(
+                    crate::notifications::service::NotificationService::new(pool.clone()),
+                );
+                crate::notifications::service::persist_user_notification_async(
+                    notif_service,
+                    user_id,
+                    workspace_id,
+                    "subscription_activated".to_string(),
+                    "Subscription activated".to_string(),
+                    Some("Your paid subscription is now active.".to_string()),
+                    Some(serde_json::json!({
+                        "workspace_id": workspace_id.to_string(),
+                        "tier": tier,
+                    })),
+                );
             }
         }
         "subscription.renewed" => {

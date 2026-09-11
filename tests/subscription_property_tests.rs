@@ -27,6 +27,11 @@ const FREE_MAX_CONTENT_CHARS: usize = 2000;
 /// Grace period duration in days (Requirement 5.30).
 const GRACE_PERIOD_DAYS: i64 = 7;
 
+/// Day thresholds at which a plan-expiry reminder is emitted (Requirement 23.2).
+/// Mirrors `EXPIRY_REMINDER_THRESHOLDS` in `src/scheduler/service.rs`: a reminder
+/// fires iff the whole-day distance to `period_end` equals one of these.
+const EXPIRY_REMINDER_THRESHOLDS: [i64; 5] = [30, 15, 7, 3, 1];
+
 // ─── Simulated Types ────────────────────────────────────────────────────────────
 
 /// Simulated subscription tiers.
@@ -54,6 +59,8 @@ enum SubError {
     SnippetContentTooLong,
     ContentSoftLocked,
     AlreadyProcessed,
+    // Referral gate errors
+    ReferrerNotOnPaidPlan,
     // Coupon errors
     CouponNotFound,
     CouponInactive,
@@ -342,6 +349,92 @@ impl ReferralStore {
     }
 }
 
+// ─── Property 8: Referral requires an active paid referrer ──────────────────────
+//
+// **Validates: Requirements 12.2, 12.3**
+//
+// Models the paid-tier gate added to `SubscriptionService::record_referral` (task 6.1):
+// after resolving the referrer, the service queries the referrer's active
+// individual-workspace subscription tier and allows recording only when that active
+// subscription's tier is `pro` or `teams`. A `free` active tier, no active
+// subscription, or a paid-but-inactive subscription is rejected with
+// `ReferrerNotOnPaidPlan`, and no referral row is created.
+
+/// Simulated store modeling the referral paid-tier gate.
+#[derive(Debug, Clone)]
+struct ReferralGateStore {
+    /// referrer_id -> optional (tier, status) of that referrer's individual-workspace
+    /// subscription. `None` means the referrer has no active subscription.
+    referrer_subscriptions: Vec<(String, Option<(SimTier, SimStatus)>)>,
+    /// Recorded referrals as (referrer_id, referred_user_id, status).
+    referrals: Vec<(String, String, String)>,
+}
+
+impl ReferralGateStore {
+    fn new() -> Self {
+        Self {
+            referrer_subscriptions: Vec::new(),
+            referrals: Vec::new(),
+        }
+    }
+
+    /// Set (or clear, with `None`) the referrer's individual-workspace subscription.
+    fn set_referrer_subscription(
+        &mut self,
+        referrer_id: &str,
+        subscription: Option<(SimTier, SimStatus)>,
+    ) {
+        self.referrer_subscriptions
+            .push((referrer_id.to_string(), subscription));
+    }
+
+    /// Total number of recorded referral rows across all referrers.
+    fn referral_count(&self) -> usize {
+        self.referrals.len()
+    }
+
+    /// Number of recorded referral rows currently in the `pending` status.
+    fn pending_referral_count(&self) -> usize {
+        self.referrals
+            .iter()
+            .filter(|(_, _, status)| status == "pending")
+            .count()
+    }
+
+    /// Attempt to record a referral, applying the paid-tier gate.
+    ///
+    /// Mirrors `record_referral`: only an *active* `pro`/`teams` subscription for the
+    /// referrer permits the write; anything else returns `ReferrerNotOnPaidPlan` and
+    /// creates no referral row.
+    fn record_referral(
+        &mut self,
+        referrer_id: &str,
+        referred_user_id: &str,
+    ) -> Result<(), SubError> {
+        // Resolve the referrer's active individual-workspace subscription tier.
+        let active_paid_tier = self
+            .referrer_subscriptions
+            .iter()
+            .find(|(rid, _)| rid == referrer_id)
+            .and_then(|(_, sub)| sub.as_ref())
+            .filter(|(_, status)| *status == SimStatus::Active)
+            .map(|(tier, _)| tier.clone());
+
+        match active_paid_tier {
+            Some(SimTier::Pro) | Some(SimTier::Teams) => {}
+            // free active tier, no active subscription, or paid-but-inactive
+            _ => return Err(SubError::ReferrerNotOnPaidPlan),
+        }
+
+        self.referrals.push((
+            referrer_id.to_string(),
+            referred_user_id.to_string(),
+            "pending".to_string(),
+        ));
+        Ok(())
+    }
+}
+
 // ─── Property 17: Billing webhook idempotency ───────────────────────────────────
 //
 // **Validates: Requirements 5.57**
@@ -520,6 +613,71 @@ fn validate_coupon(
     Ok(())
 }
 
+// ─── Property 18: Expiry reminders fire exactly at the day thresholds ───────────
+//
+// **Validates: Requirements 23.1, 23.2**
+//
+// Models `SchedulerService::expiry_reminder_check` (src/scheduler/service.rs). The
+// scheduler selects active pro/teams subscriptions with a future `period_end`,
+// computes the whole-day distance to `period_end` (`days_remaining`), and creates a
+// `plan_expiry` System notification only when that distance is exactly one of the
+// configured thresholds {30, 15, 7, 3, 1}. This in-memory store reproduces that
+// firing decision without a database so the iff can be checked across many inputs.
+
+/// Simulated store modeling the expiry-reminder firing decision.
+#[derive(Debug, Clone)]
+struct ExpiryReminderStore {
+    /// (workspace_id, tier, days_remaining, plan_expiry_notification_count)
+    subscriptions: Vec<(String, SimTier, i64, usize)>,
+}
+
+impl ExpiryReminderStore {
+    fn new() -> Self {
+        Self {
+            subscriptions: Vec::new(),
+        }
+    }
+
+    /// Register an active paid-tier subscription whose whole-day distance to
+    /// `period_end` at evaluation time is `days_remaining`.
+    fn add_active_paid(&mut self, workspace_id: &str, tier: SimTier, days_remaining: i64) {
+        self.subscriptions
+            .push((workspace_id.to_string(), tier, days_remaining, 0));
+    }
+
+    /// Evaluate the subscription once, as the recurring scheduler run would.
+    /// Returns whether a plan-expiry reminder fired. Fires iff the whole-day
+    /// distance is exactly one of the configured thresholds (Req 23.2). Only
+    /// active pro/teams subscriptions are ever evaluated (Req 23.1).
+    fn evaluate(&mut self, workspace_id: &str) -> bool {
+        let sub = self
+            .subscriptions
+            .iter_mut()
+            .find(|(wid, _, _, _)| wid == workspace_id)
+            .unwrap();
+
+        // Only active paid tiers are candidates (mirrors the SQL `tier IN
+        // ('pro','teams')` filter). Free never fires.
+        let is_paid = sub.1 == SimTier::Pro || sub.1 == SimTier::Teams;
+
+        // The exact firing predicate from the scheduler.
+        let fired = is_paid && EXPIRY_REMINDER_THRESHOLDS.contains(&sub.2);
+        if fired {
+            sub.3 += 1;
+        }
+        fired
+    }
+
+    /// Number of plan-expiry notifications created for the workspace.
+    fn notification_count(&self, workspace_id: &str) -> usize {
+        self.subscriptions
+            .iter()
+            .find(|(wid, _, _, _)| wid == workspace_id)
+            .map(|(_, _, _, count)| *count)
+            .unwrap_or(0)
+    }
+}
+
 // ─── Strategies ─────────────────────────────────────────────────────────────────
 
 /// Strategy for generating workspace IDs.
@@ -544,6 +702,16 @@ fn paid_tier_strategy() -> impl Strategy<Value = SimTier> {
 /// Strategy for generating cancelled/expired statuses.
 fn cancelled_status_strategy() -> impl Strategy<Value = SimStatus> {
     prop_oneof![Just(SimStatus::Cancelled), Just(SimStatus::Expired)]
+}
+
+/// Strategy for generating non-active subscription statuses (past_due, cancelled,
+/// expired) — used by the referral paid-tier gate property.
+fn inactive_status_strategy() -> impl Strategy<Value = SimStatus> {
+    prop_oneof![
+        Just(SimStatus::PastDue),
+        Just(SimStatus::Cancelled),
+        Just(SimStatus::Expired),
+    ]
 }
 
 /// Strategy for generating content lengths within free limit.
@@ -586,6 +754,32 @@ fn user_id_strategy() -> impl Strategy<Value = String> {
 /// Strategy for generating event IDs.
 fn event_id_strategy() -> impl Strategy<Value = String> {
     "[a-z0-9]{12}".prop_map(|s| format!("evt_{}", s))
+}
+
+/// Strategy for the whole-day distance to `period_end` at evaluation time.
+///
+/// The generator intelligently constrains to the interesting input space for the
+/// iff (Property 18): it always includes the exact thresholds {30, 15, 7, 3, 1}
+/// (fire) AND the off-by-one non-thresholds {29, 31, 2, 0} (do NOT fire), while also
+/// sampling the broader range of positive future days so the "only if" holds beyond
+/// the hand-picked boundaries. `period_end` is always in the future for candidates
+/// (the scheduler filters `period_end > now()`), so days_remaining is >= 0.
+fn expiry_days_remaining_strategy() -> impl Strategy<Value = i64> {
+    prop_oneof![
+        // Exact thresholds — must fire.
+        Just(30i64),
+        Just(15i64),
+        Just(7i64),
+        Just(3i64),
+        Just(1i64),
+        // Off-by-one non-thresholds — must NOT fire (confirms the only-if).
+        Just(29i64),
+        Just(31i64),
+        Just(2i64),
+        Just(0i64),
+        // Broader sampling of future whole-day distances.
+        0i64..=400i64,
+    ]
 }
 
 // ─── Property Test Implementations ──────────────────────────────────────────────
@@ -1136,5 +1330,188 @@ proptest! {
         let result = validate_coupon(&coupons, &code, 0);
         prop_assert!(result.is_ok(),
             "Valid coupon must pass all validation checks");
+    }
+
+    // ─── Property 8: Referral requires an active paid referrer ──────────────────
+
+    // Feature: ursnip-feature-matrix, Property 8: Referral requires an active paid referrer
+    //
+    // **Validates: Requirements 12.2, 12.3**
+    //
+    // Requirement 12.2: IF the Referrer's active Subscription Tier is `free`, THEN the
+    // Referral_Service SHALL reject with a "referrer not on paid plan" error and SHALL
+    // NOT create a referral record.
+    // Requirement 12.3: IF the Referrer has no active Subscription, THEN the
+    // Referral_Service SHALL reject with a "referrer not on paid plan" error and SHALL
+    // NOT create a referral record.
+    //
+    // Property 8a: A free-tier referrer is rejected with ReferrerNotOnPaidPlan and the
+    // referral count is unchanged.
+    #[test]
+    fn prop_referral_free_tier_referrer_rejected_no_record(
+        referrer_id in user_id_strategy(),
+        referred_id in user_id_strategy(),
+    ) {
+        prop_assume!(referrer_id != referred_id);
+
+        let mut store = ReferralGateStore::new();
+        // Referrer has an ACTIVE subscription but on the free tier.
+        store.set_referrer_subscription(
+            &referrer_id,
+            Some((SimTier::Free, SimStatus::Active)),
+        );
+
+        let count_before = store.referral_count();
+        let result = store.record_referral(&referrer_id, &referred_id);
+
+        prop_assert_eq!(result, Err(SubError::ReferrerNotOnPaidPlan),
+            "Free-tier referrer must be rejected with ReferrerNotOnPaidPlan");
+        prop_assert_eq!(store.referral_count(), count_before,
+            "Referral count must be unchanged after a rejected free-tier referral");
+    }
+
+    // Feature: ursnip-feature-matrix, Property 8: Referral requires an active paid referrer
+    //
+    // **Validates: Requirements 12.2, 12.3**
+    //
+    // Property 8b: A referrer with NO active subscription is rejected with
+    // ReferrerNotOnPaidPlan and the referral count is unchanged.
+    #[test]
+    fn prop_referral_no_active_subscription_rejected_no_record(
+        referrer_id in user_id_strategy(),
+        referred_id in user_id_strategy(),
+    ) {
+        prop_assume!(referrer_id != referred_id);
+
+        let mut store = ReferralGateStore::new();
+        // Referrer has no active subscription at all.
+        store.set_referrer_subscription(&referrer_id, None);
+
+        let count_before = store.referral_count();
+        let result = store.record_referral(&referrer_id, &referred_id);
+
+        prop_assert_eq!(result, Err(SubError::ReferrerNotOnPaidPlan),
+            "Referrer with no active subscription must be rejected with ReferrerNotOnPaidPlan");
+        prop_assert_eq!(store.referral_count(), count_before,
+            "Referral count must be unchanged when the referrer has no active subscription");
+    }
+
+    // Feature: ursnip-feature-matrix, Property 8: Referral requires an active paid referrer
+    //
+    // **Validates: Requirements 12.2, 12.3**
+    //
+    // Property 8c: A referrer whose only paid (pro/teams) subscription is NOT active
+    // (past_due / cancelled / expired) is treated as having no active paid subscription
+    // and is rejected with ReferrerNotOnPaidPlan; the referral count is unchanged.
+    #[test]
+    fn prop_referral_inactive_paid_subscription_rejected_no_record(
+        referrer_id in user_id_strategy(),
+        referred_id in user_id_strategy(),
+        tier in paid_tier_strategy(),
+        status in inactive_status_strategy(),
+    ) {
+        prop_assume!(referrer_id != referred_id);
+
+        let mut store = ReferralGateStore::new();
+        // Paid tier, but the subscription is not active.
+        store.set_referrer_subscription(&referrer_id, Some((tier, status)));
+
+        let count_before = store.referral_count();
+        let result = store.record_referral(&referrer_id, &referred_id);
+
+        prop_assert_eq!(result, Err(SubError::ReferrerNotOnPaidPlan),
+            "Paid but non-active subscription must be rejected with ReferrerNotOnPaidPlan");
+        prop_assert_eq!(store.referral_count(), count_before,
+            "Referral count must be unchanged when the paid subscription is not active");
+    }
+
+    // ─── Property 9: Eligible referrer records a pending referral ───────────────
+
+    // Feature: ursnip-feature-matrix, Property 9: Eligible referrer records a pending referral
+    //
+    // **Validates: Requirements 12.1, 12.4**
+    //
+    // Complements Property 8's rejection cases: this is the positive (happy-path)
+    // side of the paid-tier gate. An *active* `pro`/`teams` referrer paired with a
+    // valid non-self, non-duplicate referee SHALL record exactly one referral, and
+    // that referral SHALL have status `pending`.
+    //
+    // Property 9: An active pro/teams referrer + a valid non-self, non-duplicate
+    // referee creates exactly one `pending` referral.
+    #[test]
+    fn prop_eligible_referrer_records_pending_referral(
+        referrer_id in user_id_strategy(),
+        referred_id in user_id_strategy(),
+        tier in paid_tier_strategy(),
+    ) {
+        // Referee must be a valid, non-self user (non-duplicate is guaranteed since
+        // this is the first and only referral recorded for the pair).
+        prop_assume!(referrer_id != referred_id);
+
+        let mut store = ReferralGateStore::new();
+        // Referrer has an ACTIVE paid (pro/teams) subscription.
+        store.set_referrer_subscription(
+            &referrer_id,
+            Some((tier, SimStatus::Active)),
+        );
+
+        let count_before = store.referral_count();
+        let result = store.record_referral(&referrer_id, &referred_id);
+
+        // Requirement 12.1: an active pro/teams referrer passes the gate.
+        prop_assert!(result.is_ok(),
+            "Active pro/teams referrer with a valid referee must record successfully");
+
+        // Requirement 12.4: exactly one referral row exists, in `pending` status.
+        prop_assert_eq!(store.referral_count(), count_before + 1,
+            "Exactly one referral row must be created for an eligible referrer");
+        prop_assert_eq!(store.pending_referral_count(), 1,
+            "The single recorded referral must be in `pending` status");
+    }
+
+    // ─── Property 18: Expiry reminders fire exactly at the day thresholds ────────
+
+    // Feature: ursnip-feature-matrix, Property 18: Expiry reminders fire exactly at the day thresholds
+    //
+    // **Validates: Requirements 23.1, 23.2**
+    //
+    // Requirement 23.2: WHEN a Subscription's Subscription_Period_End is exactly 30,
+    // 15, 7, 3, or 1 day(s) in the future at evaluation time, THE
+    // Expiry_Reminder_Scheduler SHALL create a plan-expiry System_Notification for the
+    // Subscription's User. Requirement 23.1 fixes the recurring evaluation over active
+    // Paid_Tier Subscriptions.
+    //
+    // This mirrors the decision in `SchedulerService::expiry_reminder_check`, whose
+    // firing predicate is exactly `EXPIRY_REMINDER_THRESHOLDS.contains(&days_remaining)`
+    // for `EXPIRY_REMINDER_THRESHOLDS = [30, 15, 7, 3, 1]`. The property asserts the
+    // *if and only if*: a reminder is created precisely when the whole-day distance to
+    // `period_end` is one of the thresholds, and never otherwise.
+    //
+    // Property 18: For any evaluated active paid subscription, a plan-expiry reminder
+    // is created iff `days_remaining ∈ {30, 15, 7, 3, 1}`.
+    #[test]
+    fn prop_expiry_reminder_fires_iff_at_threshold(
+        workspace_id in workspace_id_strategy(),
+        tier in paid_tier_strategy(),
+        days_remaining in expiry_days_remaining_strategy(),
+    ) {
+        // A single active paid-tier subscription is evaluated by the scheduler at a
+        // moment when its whole-day distance to `period_end` equals `days_remaining`.
+        let mut store = ExpiryReminderStore::new();
+        store.add_active_paid(&workspace_id, tier, days_remaining);
+
+        // Evaluate once (the recurring scheduler run, Req 23.1).
+        let fired = store.evaluate(&workspace_id);
+
+        // The iff: fired exactly when days_remaining is a configured threshold.
+        let is_threshold = EXPIRY_REMINDER_THRESHOLDS.contains(&days_remaining);
+        prop_assert_eq!(fired, is_threshold,
+            "Reminder must fire iff whole-day distance is a threshold (days_remaining = {}, thresholds = {:?})",
+            days_remaining, EXPIRY_REMINDER_THRESHOLDS);
+
+        // And a plan-expiry notification exists iff it fired.
+        prop_assert_eq!(store.notification_count(&workspace_id) == 1, is_threshold,
+            "A plan-expiry notification must exist iff the reminder fired (days_remaining = {})",
+            days_remaining);
     }
 }

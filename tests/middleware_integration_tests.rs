@@ -83,7 +83,6 @@ fn build_client_type_test_app() -> Router {
 
     Router::new()
         .route("/sync/snippets", get(|| async { "sync" }))
-        .route("/ai/expand", post(|| async { "ai" }))
         .route("/subscriptions/current", get(|| async { "subs" }))
         .route("/teams/list", get(|| async { "teams" }))
         .route("/admin/users", get(|| async { "admin" }))
@@ -103,7 +102,6 @@ fn build_full_middleware_app() -> Router {
 
     let app = Router::new()
         .route("/sync/snippets", post(|| async { "sync" }))
-        .route("/ai/expand", post(|| async { "ai" }))
         .route("/subscriptions/current", get(|| async { "subs" }))
         .route("/teams/list", get(|| async { "teams" }))
         .route("/admin/users", get(|| async { "admin" }))
@@ -129,7 +127,10 @@ fn build_full_middleware_app() -> Router {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn test_sync_allows_native_rejects_web() {
+async fn test_sync_allows_both_native_and_web() {
+    // `/sync/*` is intentionally unrestricted by client type: the ursnip-app
+    // client authenticates as `web` but uses the sync endpoints, so both
+    // native and web tokens must be allowed through the client-type guard.
     let app = build_client_type_test_app();
 
     // Native can access /sync/*
@@ -148,7 +149,7 @@ async fn test_sync_allows_native_rejects_web() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Web is rejected from /sync/*
+    // Web can also access /sync/*
     let claims = make_claims(ClientType::Web);
     let token = make_token(&claims);
     let resp = app
@@ -161,45 +162,7 @@ async fn test_sync_allows_native_rejects_web() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn test_ai_allows_native_rejects_web() {
-    let app = build_client_type_test_app();
-
-    // Native can access /ai/*
-    let claims = make_claims(ClientType::Native);
-    let token = make_token(&claims);
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/ai/expand")
-                .header("Authorization", format!("Bearer {}", token))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
-    // Web is rejected from /ai/*
-    let claims = make_claims(ClientType::Web);
-    let token = make_token(&claims);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/ai/expand")
-                .header("Authorization", format!("Bearer {}", token))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -613,13 +576,15 @@ async fn test_sync_routes_allow_elevated_10mb_limit() {
 async fn test_error_response_has_trace_id_and_error_code() {
     let app = build_client_type_test_app();
 
-    // Trigger a 403 error via client type mismatch
-    let claims = make_claims(ClientType::Web);
+    // Trigger a 403 error via client type mismatch: a native client hitting a
+    // web-only route (/subscriptions/*). Note: /sync/* is intentionally
+    // unrestricted, so it can no longer be used to force this error.
+    let claims = make_claims(ClientType::Native);
     let token = make_token(&claims);
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/sync/snippets")
+                .uri("/subscriptions/current")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -708,9 +673,8 @@ mod property_tests {
     //
     // For any combination of client_type (native/web) and endpoint prefix,
     // the guard correctly allows or denies:
-    //   - /sync/*, /ai/* → native only
     //   - /subscriptions/*, /teams/*, /admin/* → web only
-    //   - Other paths → both allowed
+    //   - /sync/* and other paths → both client types allowed
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Strategy for generating a client type.
@@ -722,9 +686,8 @@ mod property_tests {
     /// Returns (path, required_client_type_or_none).
     fn endpoint_strategy() -> impl Strategy<Value = (&'static str, Option<ClientType>)> {
         prop_oneof![
-            Just(("/sync/snippets", Some(ClientType::Native))),
-            Just(("/sync/snapshot", Some(ClientType::Native))),
-            Just(("/ai/expand", Some(ClientType::Native))),
+            Just(("/sync/snippets", None)),
+            Just(("/sync/snapshot", None)),
             Just(("/subscriptions/current", Some(ClientType::Web))),
             Just(("/teams/list", Some(ClientType::Web))),
             Just(("/admin/users", Some(ClientType::Web))),
@@ -811,7 +774,6 @@ mod property_tests {
         prop_oneof![
             // (method, uri, description) — all should produce errors
             Just(("GET", "/sync/snippets", "no_auth_on_protected")),
-            Just(("GET", "/sync/snippets", "web_on_native_only")),
             Just(("GET", "/admin/users", "native_on_web_only")),
             Just(("GET", "/subscriptions/current", "native_on_web_only")),
             Just(("GET", "/teams/list", "native_on_web_only")),

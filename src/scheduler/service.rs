@@ -9,6 +9,18 @@ use tracing::{error, info, warn};
 
 use crate::errors::AppError;
 
+/// A subscription candidate for expiry-reminder evaluation, joined to its
+/// owning user. `days_remaining` is the whole-day distance from evaluation
+/// time to `period_end` (computed in SQL via FLOOR of the day fraction).
+#[derive(sqlx::FromRow)]
+struct ExpiryCandidate {
+    subscription_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    period_end: chrono::DateTime<chrono::Utc>,
+    days_remaining: i64,
+}
+
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
 /// Retry backoff durations for transient failures (Requirement 7.13).
@@ -29,6 +41,11 @@ const EXPIRED_TOKEN_CLEANUP_INTERVAL: Duration = Duration::from_secs(3600); // 1
 const GRACE_PERIOD_CHECK_INTERVAL: Duration = Duration::from_secs(3600);    // 1 hour
 const PAYMENT_DEADLINE_CHECK_INTERVAL: Duration = Duration::from_secs(3600); // 1 hour
 const ACCOUNT_HARD_DELETE_CHECK_INTERVAL: Duration = Duration::from_secs(86400); // 24 hours
+const EXPIRY_REMINDER_CHECK_INTERVAL: Duration = Duration::from_secs(3600); // 1 hour
+
+/// Day thresholds at which a plan-expiry reminder is emitted (Requirement 23.2).
+/// A reminder fires iff the whole-day distance to `period_end` equals one of these.
+const EXPIRY_REMINDER_THRESHOLDS: [i64; 5] = [30, 15, 7, 3, 1];
 
 // ─── SchedulerService ───────────────────────────────────────────────────────────
 
@@ -108,6 +125,13 @@ impl SchedulerService {
                 ACCOUNT_HARD_DELETE_CHECK_INTERVAL,
                 shutdown_rx.clone(),
                 |svc| Box::pin(async move { svc.account_hard_delete_check().await.map(|_| ()) }),
+            ));
+
+            handles.push(self.spawn_task(
+                "expiry_reminder_check",
+                EXPIRY_REMINDER_CHECK_INTERVAL,
+                shutdown_rx.clone(),
+                |svc| Box::pin(async move { svc.expiry_reminder_check().await.map(|_| ()) }),
             ));
 
             info!("Scheduler started with {} tasks", handles.len());
@@ -470,6 +494,131 @@ impl SchedulerService {
             "account_hard_delete_check: hard-deleted user accounts"
         );
         Ok(deleted_count)
+    }
+
+    /// Emit plan-expiry reminder notifications for active paid-tier subscriptions
+    /// approaching their `period_end` (Requirements 23.1, 23.2, 23.3).
+    ///
+    /// Runs hourly. For every active `pro`/`teams` subscription with a
+    /// `period_end` in the future, it computes the *whole-day* distance from
+    /// evaluation time to `period_end` (floor of the day fraction) and, when that
+    /// distance is exactly one of {30, 15, 7, 3, 1}, creates a plan-expiry
+    /// System_Notification for the subscription's user (the owning workspace's
+    /// owner).
+    ///
+    /// Idempotence per threshold (Req 23.3) is guarded by an
+    /// `INSERT ... ON CONFLICT DO NOTHING` against the `expiry_reminders_sent`
+    /// marker table, keyed on `(subscription_id, period_end, threshold_days)`.
+    /// The notification is only created when the marker insert actually adds a
+    /// row, so repeated runs within the same period + threshold create at most
+    /// one notification. Keying on `period_end` re-arms all thresholds when a
+    /// subscription renews into a new paid period.
+    ///
+    /// Returns the number of notifications created during this run. Exposed
+    /// (`pub`) so the reminder property/integration tests can drive the real
+    /// code path against a live database; it is otherwise only invoked by the
+    /// hourly `expiry_reminder_check` scheduler task.
+    pub async fn expiry_reminder_check(&self) -> Result<u64, AppError> {
+        // Fetch active paid-tier subscriptions whose period_end is upcoming, along
+        // with the owning user (subscriptions are workspace-scoped; the
+        // "Subscription's User" is the owning workspace's owner).
+        //
+        // The whole-day distance is computed in SQL via FLOOR of the epoch-second
+        // delta divided by seconds-per-day, so a period_end that is e.g. 30 days
+        // and a few hours away still reads as 30 (whole days remaining).
+        let rows = sqlx::query_as::<_, ExpiryCandidate>(
+            r#"
+            SELECT
+                s.id           AS subscription_id,
+                s.workspace_id AS workspace_id,
+                w.owner_id     AS user_id,
+                s.period_end   AS period_end,
+                FLOOR(EXTRACT(EPOCH FROM (s.period_end - now())) / 86400)::bigint AS days_remaining
+            FROM subscriptions s
+            JOIN workspaces w ON w.id = s.workspace_id
+            WHERE s.status = 'active'
+              AND s.tier IN ('pro', 'teams')
+              AND s.period_end IS NOT NULL
+              AND s.period_end > now()
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Self::map_db_error(e))?;
+
+        let notification_service =
+            crate::notifications::service::NotificationService::new(self.pool.clone());
+
+        let mut sent_count: u64 = 0;
+
+        for cand in rows {
+            // Only fire when the whole-day distance is exactly a configured threshold.
+            if !EXPIRY_REMINDER_THRESHOLDS.contains(&cand.days_remaining) {
+                continue;
+            }
+            let threshold = cand.days_remaining;
+
+            // Idempotence guard (Req 23.3): claim the (subscription, period_end,
+            // threshold) marker atomically. If a row already exists the reminder
+            // was already sent for this threshold in this period → skip.
+            let claim = sqlx::query(
+                r#"
+                INSERT INTO expiry_reminders_sent (subscription_id, period_end, threshold_days)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (subscription_id, period_end, threshold_days) DO NOTHING
+                "#,
+            )
+            .bind(cand.subscription_id)
+            .bind(cand.period_end)
+            .bind(threshold as i32)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Self::map_db_error(e))?;
+
+            if claim.rows_affected() == 0 {
+                // Already sent for this threshold/period — idempotent no-op.
+                continue;
+            }
+
+            // Marker claimed: create exactly one plan-expiry notification.
+            let day_word = if threshold == 1 { "day" } else { "days" };
+            let create = crate::notifications::service::CreateNotification {
+                user_id: cand.user_id,
+                workspace_id: cand.workspace_id,
+                event_type: "plan_expiry".to_string(),
+                title: "Your plan is expiring soon".to_string(),
+                description: Some(format!(
+                    "Your subscription expires in {threshold} {day_word}. Renew to keep your plan active."
+                )),
+                metadata: Some(serde_json::json!({
+                    "subscription_id": cand.subscription_id,
+                    "period_end": cand.period_end,
+                    "threshold_days": threshold,
+                })),
+                classification: Some("system".to_string()),
+            };
+
+            if let Err(e) = notification_service.create(create).await {
+                // Log but do not fail the whole run for one recipient. The marker
+                // has already been claimed for this threshold, matching the
+                // "at most one notification" guarantee (Req 23.3).
+                error!(
+                    subscription_id = %cand.subscription_id,
+                    threshold = threshold,
+                    error = %e,
+                    "expiry_reminder_check: failed to create plan-expiry notification"
+                );
+                continue;
+            }
+
+            sent_count += 1;
+        }
+
+        info!(
+            count = sent_count,
+            "expiry_reminder_check: created plan-expiry reminder notifications"
+        );
+        Ok(sent_count)
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────────

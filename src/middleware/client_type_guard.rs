@@ -4,11 +4,10 @@
 //! encoded in the authenticated user's access token claims.
 //!
 //! Route prefix rules:
-//! - `/sync/*`          → native only
 //! - `/subscriptions/*` → web only
 //! - `/teams/*`         → web only
 //! - `/admin/*`         → web only
-//! - `/ai/*`            → native only
+//! - `/sync/*`          → unrestricted (both native and web; the app is a web client)
 //!
 //! Returns 403 `CLIENT_TYPE_NOT_ALLOWED` on mismatch.
 //! If no claims are present in request extensions (unauthenticated/public route),
@@ -25,6 +24,11 @@ use crate::middleware::auth_extractor::AccessTokenClaims;
 use crate::models::ClientType;
 
 /// Rules mapping path prefixes to the required client type.
+// NOTE: `/sync/*` is intentionally NOT restricted to `native` here. The
+// ursnip-app client authenticates as `web` (see the app's sign-in/sign-up/OTP
+// flows) yet legitimately uses the `/sync/*` snippet endpoints, so enforcing
+// native-only sync would reject normal snippet creation with
+// CLIENT_TYPE_NOT_ALLOWED. Web-only groups below remain enforced.
 const CLIENT_TYPE_RULES: &[(&str, ClientType)] = &[
     ("/subscriptions/", ClientType::Web),
     ("/teams/", ClientType::Web),
@@ -76,7 +80,6 @@ mod tests {
             .route("/subscriptions/plans", get(|| async { "ok" }))
             .route("/teams/list", get(|| async { "ok" }))
             .route("/admin/users", get(|| async { "ok" }))
-            .route("/ai/expand", get(|| async { "ok" }))
             .route("/health", get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(client_type_guard))
     }
@@ -114,6 +117,9 @@ mod tests {
     }
 
     // --- /sync/* tests ---
+    // `/sync/*` is intentionally unrestricted: the ursnip-app client
+    // authenticates as `web` but uses the sync endpoints, so both client
+    // types must pass through the guard.
 
     #[tokio::test]
     async fn sync_allows_native_client() {
@@ -124,11 +130,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_rejects_web_client() {
+    async fn sync_allows_web_client() {
         let app = test_router();
         let req = request_with_claims("/sync/push", ClientType::Web);
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // --- /subscriptions/* tests ---
@@ -181,24 +187,6 @@ mod tests {
     async fn admin_rejects_native_client() {
         let app = test_router();
         let req = request_with_claims("/admin/users", ClientType::Native);
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    // --- /ai/* tests ---
-
-    #[tokio::test]
-    async fn ai_allows_native_client() {
-        let app = test_router();
-        let req = request_with_claims("/ai/expand", ClientType::Native);
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn ai_rejects_web_client() {
-        let app = test_router();
-        let req = request_with_claims("/ai/expand", ClientType::Web);
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }

@@ -42,6 +42,8 @@ pub enum AppError {
     NotAccountOwner,
     #[error("Resource access denied")]
     ResourceAccessDenied,
+    #[error("Referrer not on a paid plan")]
+    ReferrerNotOnPaidPlan,
 
     // Payment required (402)
     #[error("Subscription required")]
@@ -60,6 +62,10 @@ pub enum AppError {
     AuditLogNotFound,
     #[error("Feature flag not found")]
     FeatureFlagNotFound,
+    #[error("Recipient not found")]
+    RecipientNotFound,
+    #[error("Seat not found")]
+    SeatNotFound,
 
     // Conflict (409)
     #[error("Email already registered")]
@@ -78,6 +84,8 @@ pub enum AppError {
     TaxRateAlreadyExists,
     #[error("Feature flag already exists")]
     FeatureFlagAlreadyExists,
+    #[error("Seat is in use")]
+    SeatInUse,
 
     // Unprocessable (422)
     #[error("Validation error")]
@@ -162,34 +170,26 @@ pub enum AppError {
     SnippetContentTooLarge,
     #[error("Invalid since version")]
     InvalidSinceVersion,
-    #[error("Trigger too long")]
-    TriggerTooLong,
-    #[error("System prompt too long")]
-    SystemPromptTooLong,
-    #[error("Context too long")]
-    ContextTooLong,
     #[error("Invalid request body")]
     InvalidRequestBody,
+    #[error("Import parse error")]
+    ImportParseError,
+    #[error("Seat exceeds paid period")]
+    SeatExceedsPaidPeriod,
+    #[error("Invalid seat duration")]
+    InvalidSeatDuration,
 
     // Rate limiting (429)
     #[error("Account locked")]
     AccountLocked { retry_after_secs: u64 },
     #[error("Rate limit exceeded")]
     RateLimitExceeded { retry_after_secs: u64 },
-    #[error("AI quota exceeded")]
-    AiQuotaExceeded,
-    #[error("AI service busy")]
-    AiServiceBusy,
 
     // Request too large (413)
     #[error("Request body too large")]
     RequestBodyTooLarge,
 
     // Server errors (5xx)
-    #[error("AI provider unavailable")]
-    AiProviderUnavailable,
-    #[error("AI provider invalid response")]
-    AiProviderInvalidResponse,
     #[error("Database timeout")]
     DatabaseTimeout,
     #[error("Service unavailable")]
@@ -252,7 +252,8 @@ impl AppError {
             | Self::NotAWorkspaceMember
             | Self::TeamsPlanRequired
             | Self::NotAccountOwner
-            | Self::ResourceAccessDenied => StatusCode::FORBIDDEN,
+            | Self::ResourceAccessDenied
+            | Self::ReferrerNotOnPaidPlan => StatusCode::FORBIDDEN,
 
             // 404
             Self::UserNotFound
@@ -260,7 +261,9 @@ impl AppError {
             | Self::SubscriptionNotFound
             | Self::CouponNotFound
             | Self::AuditLogNotFound
-            | Self::FeatureFlagNotFound => StatusCode::NOT_FOUND,
+            | Self::FeatureFlagNotFound
+            | Self::RecipientNotFound
+            | Self::SeatNotFound => StatusCode::NOT_FOUND,
 
             // 409
             Self::EmailAlreadyRegistered
@@ -270,7 +273,8 @@ impl AppError {
             | Self::AccountLinkingConflict
             | Self::CouponCodeAlreadyExists
             | Self::TaxRateAlreadyExists
-            | Self::FeatureFlagAlreadyExists => StatusCode::CONFLICT,
+            | Self::FeatureFlagAlreadyExists
+            | Self::SeatInUse => StatusCode::CONFLICT,
 
             // 413
             Self::RequestBodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -317,22 +321,17 @@ impl AppError {
             | Self::BatchSizeExceeded
             | Self::SnippetContentTooLarge
             | Self::InvalidSinceVersion
-            | Self::TriggerTooLong
-            | Self::SystemPromptTooLong
-            | Self::ContextTooLong
-            | Self::InvalidRequestBody => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::InvalidRequestBody
+            | Self::ImportParseError
+            | Self::SeatExceedsPaidPeriod
+            | Self::InvalidSeatDuration => StatusCode::UNPROCESSABLE_ENTITY,
 
             // 429
             Self::AccountLocked { .. }
-            | Self::RateLimitExceeded { .. }
-            | Self::AiQuotaExceeded
-            | Self::AiServiceBusy => StatusCode::TOO_MANY_REQUESTS,
+            | Self::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
 
             // 5xx
-            Self::AiProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-            Self::AiProviderInvalidResponse | Self::InternalError => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::DatabaseTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
@@ -362,6 +361,7 @@ impl AppError {
             Self::TeamsPlanRequired => "TEAMS_PLAN_REQUIRED",
             Self::NotAccountOwner => "NOT_ACCOUNT_OWNER",
             Self::ResourceAccessDenied => "RESOURCE_ACCESS_DENIED",
+            Self::ReferrerNotOnPaidPlan => "REFERRER_NOT_ON_PAID_PLAN",
 
             // 402
             Self::SubscriptionRequired => "SUBSCRIPTION_REQUIRED",
@@ -373,6 +373,8 @@ impl AppError {
             Self::CouponNotFound => "COUPON_NOT_FOUND",
             Self::AuditLogNotFound => "AUDIT_LOG_NOT_FOUND",
             Self::FeatureFlagNotFound => "FEATURE_FLAG_NOT_FOUND",
+            Self::RecipientNotFound => "RECIPIENT_NOT_FOUND",
+            Self::SeatNotFound => "SEAT_NOT_FOUND",
 
             // 409
             Self::EmailAlreadyRegistered => "EMAIL_ALREADY_REGISTERED",
@@ -383,6 +385,7 @@ impl AppError {
             Self::CouponCodeAlreadyExists => "COUPON_CODE_ALREADY_EXISTS",
             Self::TaxRateAlreadyExists => "TAX_RATE_ALREADY_EXISTS",
             Self::FeatureFlagAlreadyExists => "FEATURE_FLAG_ALREADY_EXISTS",
+            Self::SeatInUse => "SEAT_IN_USE",
 
             // 422
             Self::ValidationError { .. } => "VALIDATION_ERROR",
@@ -426,23 +429,19 @@ impl AppError {
             Self::BatchSizeExceeded => "BATCH_SIZE_EXCEEDED",
             Self::SnippetContentTooLarge => "SNIPPET_CONTENT_TOO_LARGE",
             Self::InvalidSinceVersion => "INVALID_SINCE_VERSION",
-            Self::TriggerTooLong => "TRIGGER_TOO_LONG",
-            Self::SystemPromptTooLong => "SYSTEM_PROMPT_TOO_LONG",
-            Self::ContextTooLong => "CONTEXT_TOO_LONG",
             Self::InvalidRequestBody => "INVALID_REQUEST_BODY",
+            Self::ImportParseError => "IMPORT_PARSE_ERROR",
+            Self::SeatExceedsPaidPeriod => "SEAT_EXCEEDS_PAID_PERIOD",
+            Self::InvalidSeatDuration => "INVALID_SEAT_DURATION",
 
             // 429
             Self::AccountLocked { .. } => "ACCOUNT_LOCKED",
             Self::RateLimitExceeded { .. } => "RATE_LIMIT_EXCEEDED",
-            Self::AiQuotaExceeded => "AI_QUOTA_EXCEEDED",
-            Self::AiServiceBusy => "AI_SERVICE_BUSY",
 
             // 413
             Self::RequestBodyTooLarge => "REQUEST_BODY_TOO_LARGE",
 
             // 5xx
-            Self::AiProviderUnavailable => "AI_PROVIDER_UNAVAILABLE",
-            Self::AiProviderInvalidResponse => "AI_PROVIDER_INVALID_RESPONSE",
             Self::DatabaseTimeout => "DATABASE_TIMEOUT",
             Self::ServiceUnavailable => "SERVICE_UNAVAILABLE",
             Self::InternalError => "INTERNAL_ERROR",

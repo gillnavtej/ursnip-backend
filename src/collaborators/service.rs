@@ -11,6 +11,7 @@ use crate::auth::service::{generate_refresh_token, hash_token};
 use crate::config::AppConfig;
 use crate::email::{service::EmailService, templates};
 use crate::errors::AppError;
+use crate::notifications::service::{CreateNotification, NotificationService};
 
 use super::{access, CollaboratorInfo, GrantInfo, InviteResponse, Level, ResourceType};
 
@@ -99,11 +100,131 @@ impl CollaboratorService {
         );
         self.email_service.send_email(message);
 
+        // ── Workspace-invite notifications (Feature 7, Req 21.1 / 21.2) ──────
+        // Emit a System_Notification for the sender recording the sent invite
+        // (Req 21.1), and — when the invited email resolves to an existing user
+        // — for the receiver recording the received invite (Req 21.2). Both are
+        // fire-and-forget: a notification write failure must never fail or roll
+        // back the completed invite. A fresh `NotificationService` is built from
+        // the pool (its `create` applies each user's preferences and bounded
+        // retry internally), mirroring the sharing service's convention.
+        self.emit_invite_notifications(owner_id, &email, id).await;
+
         Ok(InviteResponse {
             id,
             email,
             expires_at,
         })
+    }
+
+    /// Emit the sender/receiver workspace-invite notifications (Req 21.1, 21.2).
+    ///
+    /// Non-blocking: notification writes are spawned so that a failure cannot
+    /// fail or roll back the already-completed invite. Each notification is
+    /// anchored to the sender's individual workspace, which is the account-level
+    /// context the invite originates from (collaborator invites are account
+    /// level, but the `notifications` table requires a workspace anchor).
+    ///
+    /// - Sender (Req 21.1): always created for `owner_id`.
+    /// - Receiver (Req 21.2): created only when `email` resolves to an existing
+    ///   user account. A not-yet-registered invitee has no user row to notify;
+    ///   they learn of the invite via the emailed accept link and will see it
+    ///   once they have an account.
+    async fn emit_invite_notifications(&self, owner_id: Uuid, email: &str, invite_id: Uuid) {
+        // Anchor workspace: the sender's individual workspace. If it cannot be
+        // resolved we skip notifications rather than failing the invite.
+        let anchor_workspace_id = match self.individual_workspace_id(owner_id).await {
+            Ok(Some(ws)) => ws,
+            Ok(None) => {
+                tracing::warn!(
+                    owner_id = %owner_id,
+                    "No individual workspace to anchor invite notifications; skipping"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to resolve anchor workspace for invite notifications");
+                return;
+            }
+        };
+
+        // Resolve the invited email to an existing user for the receiver
+        // notification (Req 21.2). Absent user ⇒ no receiver notification.
+        let receiver_id = match self.user_id_by_email(email).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to resolve invitee for invite notifications");
+                None
+            }
+        };
+
+        let notifications = NotificationService::new(self.pool.clone());
+        let email = email.to_string();
+
+        // Sender notification (Req 21.1) — always.
+        let sender_notif = CreateNotification {
+            user_id: owner_id,
+            workspace_id: anchor_workspace_id,
+            event_type: "workspace_invite_sent".to_string(),
+            title: "Invite sent".to_string(),
+            description: Some(format!("You invited {email} to collaborate.")),
+            metadata: Some(serde_json::json!({
+                "invite_id": invite_id,
+                "invited_email": email,
+            })),
+            classification: Some("system".to_string()),
+        };
+
+        // Receiver notification (Req 21.2) — only when the invitee has an account.
+        let receiver_notif = receiver_id.map(|rid| CreateNotification {
+            user_id: rid,
+            workspace_id: anchor_workspace_id,
+            event_type: "workspace_invite_received".to_string(),
+            title: "You have a new invite".to_string(),
+            description: Some("You were invited to collaborate.".to_string()),
+            metadata: Some(serde_json::json!({
+                "invite_id": invite_id,
+                "invited_by": owner_id,
+            })),
+            classification: Some("system".to_string()),
+        });
+
+        tokio::spawn(async move {
+            if let Err(e) = notifications.create(sender_notif).await {
+                tracing::error!(error = %e, "Failed to emit workspace-invite (sender) notification");
+            }
+            if let Some(receiver_notif) = receiver_notif {
+                if let Err(e) = notifications.create(receiver_notif).await {
+                    tracing::error!(error = %e, "Failed to emit workspace-invite (receiver) notification");
+                }
+            }
+        });
+    }
+
+    /// Resolve a user's individual (personal) workspace id, if any.
+    async fn individual_workspace_id(&self, owner_id: Uuid) -> Result<Option<Uuid>, AppError> {
+        sqlx::query_scalar(
+            r#"
+            SELECT id FROM workspaces
+            WHERE owner_id = $1 AND type = 'individual'
+            ORDER BY created_at
+            LIMIT 1
+            "#,
+        )
+        .bind(owner_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)
+    }
+
+    /// Resolve an existing user's id from their email (case-insensitive).
+    /// Returns `None` when no account matches (a not-yet-registered invitee).
+    async fn user_id_by_email(&self, email: &str) -> Result<Option<Uuid>, AppError> {
+        sqlx::query_scalar("SELECT id FROM users WHERE lower(email) = lower($1)")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| AppError::InternalError)
     }
 
     /// Accept an invite. Requires the authenticated user's email to match the

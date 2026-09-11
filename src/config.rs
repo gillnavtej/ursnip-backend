@@ -21,9 +21,6 @@ pub struct AppConfig {
     pub github_client_id: String,
     pub github_client_secret: String,
     pub oauth_redirect_base_url: String,
-    pub ai_provider_url: String,
-    pub ai_provider_key: String,
-    pub gemini_api_key: String,
     pub billing_webhook_secret: String,
     pub email_from_address: String,
     pub seed_admin_email: String,
@@ -52,7 +49,6 @@ pub struct AppConfig {
     pub cors_allowed_origins: Vec<String>,
     pub trusted_proxy_cidrs: Vec<String>,
     pub ws_max_connections: usize,
-    pub ai_max_concurrent_requests: usize,
     pub shutdown_timeout_secs: u64,
     pub billing_success_url: Option<String>,
     pub billing_cancel_url: Option<String>,
@@ -92,9 +88,6 @@ impl AppConfig {
         let github_client_id = require!("GITHUB_CLIENT_ID");
         let github_client_secret = require!("GITHUB_CLIENT_SECRET");
         let oauth_redirect_base_url = require!("OAUTH_REDIRECT_BASE_URL");
-        let ai_provider_url = require!("AI_PROVIDER_URL");
-        let ai_provider_key = require!("AI_PROVIDER_KEY");
-        let gemini_api_key = env::var("GEMINIEAPIKEY").unwrap_or_default();
         let billing_webhook_secret = require!("BILLING_WEBHOOK_SECRET");
         let email_from_address = require!("EMAIL_FROM_ADDRESS");
         let seed_admin_email = require!("SEED_ADMIN_EMAIL");
@@ -253,11 +246,6 @@ impl AppConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(10_000);
 
-        let ai_max_concurrent_requests = env::var("AI_MAX_CONCURRENT_REQUESTS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(50);
-
         let shutdown_timeout_secs = env::var("SHUTDOWN_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -281,9 +269,6 @@ impl AppConfig {
             github_client_id,
             github_client_secret,
             oauth_redirect_base_url,
-            ai_provider_url,
-            ai_provider_key,
-            gemini_api_key,
             billing_webhook_secret,
             email_from_address,
             seed_admin_email,
@@ -306,7 +291,6 @@ impl AppConfig {
             cors_allowed_origins,
             trusted_proxy_cidrs,
             ws_max_connections,
-            ai_max_concurrent_requests,
             shutdown_timeout_secs,
             billing_success_url,
             billing_cancel_url,
