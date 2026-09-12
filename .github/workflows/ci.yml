@@ -1,0 +1,46 @@
+name: CI
+
+# Fast, Docker-free checks for the cloud backend, on every PR and push to main.
+#
+# Runs the unit + property test layer (`cargo test --lib`) plus a locked build.
+# This layer needs NO database — the DB-gated
+# integration tests are `#[ignore]`d and run separately (see the e2e-testing spec
+# / docker-compose.test.yml). Adding this catches regressions in the API core
+# automatically; e.g. it would have caught the token-refresh query regression.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: build + unit/property tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # NOTE: a `cargo fmt --check` gate is intentionally omitted — the existing
+      # codebase is not rustfmt-clean, so enforcing it now would fail on ~68
+      # pre-existing files unrelated to any given change. Add it in a dedicated
+      # formatting pass if the team decides to adopt rustfmt.
+
+      - name: Build (locked)
+        run: cargo build --locked
+
+      # Unit + property tests. These do NOT require DATABASE_URL; the DB-gated
+      # integration tests are `#[ignore]`d and excluded here.
+      - name: Run unit + property tests
+        run: cargo test --lib --locked
