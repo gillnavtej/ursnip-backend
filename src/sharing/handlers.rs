@@ -11,15 +11,11 @@ use axum::{extract::Extension, http::StatusCode, response::IntoResponse, Json};
 
 use crate::errors::AppError;
 use crate::middleware::auth_extractor::AccessTokenClaims;
-use crate::sharing::service::{ShareRequest, SharingService};
+use crate::sharing::service::{ShareFolderRequest, ShareRequest, SharingService};
 
 /// POST /sharing/snippets
 ///
 /// Share a snippet to a recipient, creating an independent recipient-owned copy.
-///
-/// Full behavior (success `{ snippet_id, recipient_id, trigger }`, 404 recipient
-/// not found, 409 trigger conflict, 403 unauthorized-read) lands with the
-/// service logic in task 4.2 and route registration in task 4.3.
 pub async fn share_snippet_handler(
     Extension(service): Extension<Arc<SharingService>>,
     Extension(claims): Extension<AccessTokenClaims>,
@@ -27,4 +23,19 @@ pub async fn share_snippet_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let shared = service.share_snippet(claims.sub, req).await?;
     Ok((StatusCode::OK, Json(shared)))
+}
+
+/// POST /sharing/folders
+///
+/// Share every non-deleted snippet in a folder to a recipient, each as an
+/// independent recipient-owned copy. Returns a per-snippet breakdown
+/// (`shared` / `skipped` / `failed`) so partial success (e.g. a trigger already
+/// present in the target workspace) is surfaced rather than failing the batch.
+pub async fn share_folder_handler(
+    Extension(service): Extension<Arc<SharingService>>,
+    Extension(claims): Extension<AccessTokenClaims>,
+    Json(req): Json<ShareFolderRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let result = service.share_folder(claims.sub, req).await?;
+    Ok((StatusCode::OK, Json(result)))
 }

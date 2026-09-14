@@ -126,6 +126,10 @@ impl OAuthService {
         client_type: &ClientType,
     ) -> String {
         let redirect_uri = self.build_redirect_uri(provider, client_type);
+        // Round-trip the client type through the `state` param so the callback
+        // knows whether to redirect back to the web frontend or the native deep
+        // link. (State also serves the usual CSRF-hardening role.)
+        let state = client_type_to_str(client_type);
 
         match provider {
             OAuthProvider::Google => {
@@ -135,9 +139,11 @@ impl OAuthService {
                      redirect_uri={}&\
                      response_type=code&\
                      scope=openid%20email%20profile&\
-                     access_type=offline",
+                     access_type=offline&\
+                     state={}",
                     urlencoded(&self.config.google_client_id),
                     urlencoded(&redirect_uri),
+                    urlencoded(state),
                 )
             }
             OAuthProvider::GitHub => {
@@ -145,9 +151,11 @@ impl OAuthService {
                     "https://github.com/login/oauth/authorize?\
                      client_id={}&\
                      redirect_uri={}&\
-                     scope=user:email",
+                     scope=user:email&\
+                     state={}",
                     urlencoded(&self.config.github_client_id),
                     urlencoded(&redirect_uri),
+                    urlencoded(state),
                 )
             }
         }
@@ -603,17 +611,21 @@ impl OAuthService {
     /// Build the redirect URI based on client type.
     /// - Native → `ursnip://oauth/callback`
     /// - Web → `{oauth_redirect_base_url}/auth/oauth/{provider}/callback`
-    fn build_redirect_uri(&self, provider: OAuthProvider, client_type: &ClientType) -> String {
-        match client_type {
-            ClientType::Native => "ursnip://oauth/callback".to_string(),
-            ClientType::Web => {
-                format!(
-                    "{}/auth/oauth/{}/callback",
-                    self.config.oauth_redirect_base_url,
-                    provider.as_str()
-                )
-            }
-        }
+    ///
+    /// Both client types redirect the PROVIDER to the backend callback (which
+    /// holds the client secret and performs the code→token exchange). The
+    /// backend then redirects to the client-appropriate destination — the
+    /// frontend `/callback` (web) or the `ursnip://oauth/callback` deep link
+    /// (native). Using a custom scheme as the provider `redirect_uri` directly
+    /// is rejected by providers like Google and would also require exchanging the
+    /// code client-side without the secret, so native goes through the backend
+    /// too (distinguished via the `state` parameter).
+    fn build_redirect_uri(&self, provider: OAuthProvider, _client_type: &ClientType) -> String {
+        format!(
+            "{}/auth/oauth/{}/callback",
+            self.config.oauth_redirect_base_url,
+            provider.as_str()
+        )
     }
 
     /// Generate a unique referral code within a transaction.

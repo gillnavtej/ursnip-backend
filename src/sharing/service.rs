@@ -49,6 +49,48 @@ pub struct SharedCopy {
     pub trigger: String,
 }
 
+/// Request to share every snippet in a folder to a recipient.
+///
+/// Same recipient/target semantics as [`ShareRequest`], but scoped to a folder:
+/// each of the folder's non-deleted snippets is shared as an independent
+/// recipient-owned copy.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShareFolderRequest {
+    pub source_folder_id: Uuid,
+    /// Email or user id — resolved via the existing user-lookup mechanism.
+    pub recipient: String,
+    /// The recipient's target workspace the copied snippets are created in.
+    pub target_workspace_id: Uuid,
+}
+
+/// Per-snippet outcome within a folder share (partial success is expected: a
+/// trigger conflict on one snippet must not abort the rest).
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderShareItem {
+    /// The source snippet's trigger (identifies the row for the UI).
+    pub trigger: String,
+    /// `"shared"` (copied), `"skipped"` (already present / trigger conflict), or
+    /// `"failed"` (any other error — e.g. content too long).
+    pub status: String,
+    /// The new recipient-owned snippet id, present only when `status == "shared"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_id: Option<Uuid>,
+    /// A short reason when not shared (for the UI's per-row hint).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Aggregate result of a folder share.
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderShareResponse {
+    pub recipient_id: Uuid,
+    pub total: usize,
+    pub shared: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub items: Vec<FolderShareItem>,
+}
+
 /// Service that creates recipient-owned copies of shared snippets.
 ///
 /// Reuses [`SyncService`] for the recipient workspace's trigger-uniqueness and
@@ -189,6 +231,125 @@ impl SharingService {
             snippet_id: created.id,
             recipient_id,
             trigger: created.trigger,
+        })
+    }
+
+    /// Share every non-deleted snippet in a folder to a recipient.
+    ///
+    /// Reuses [`Self::share_snippet`] per snippet so all the same rules apply
+    /// (read-access on the source, recipient resolution, and the recipient
+    /// workspace's trigger-uniqueness / content-size enforcement). Partial
+    /// success is expected and desired: a trigger conflict on one snippet is
+    /// recorded as `skipped` and the remaining snippets are still shared, rather
+    /// than aborting the whole folder.
+    ///
+    /// Pre-copy failures that apply to the whole request (unresolvable recipient,
+    /// or a folder the requester cannot read) fail fast with no copies made.
+    pub async fn share_folder(
+        &self,
+        requester_id: Uuid,
+        req: ShareFolderRequest,
+    ) -> Result<FolderShareResponse, AppError> {
+        // ── 1. Resolve the folder + its workspace; check requester read access. ─
+        // A folder the requester cannot see is reported as an access failure
+        // rather than 404 (consistent with share_snippet, so folder existence is
+        // not disclosed).
+        let workspace_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT workspace_id FROM folders WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(req.source_folder_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+        let workspace_id = workspace_id.ok_or(AppError::ResourceAccessDenied)?;
+
+        let effective = access::effective_access(
+            &self.pool,
+            requester_id,
+            workspace_id,
+            &[req.source_folder_id],
+            None,
+        )
+        .await?;
+        if effective.is_none() {
+            return Err(AppError::ResourceAccessDenied);
+        }
+
+        // ── 2. Resolve the recipient once (fail fast; no copies on failure). ──
+        let recipient_id = self.resolve_recipient(&req.recipient).await?;
+
+        // ── 3. Collect the folder's non-deleted snippets. ───────────────────
+        let snippet_ids: Vec<(Uuid, String)> = sqlx::query_as(
+            r#"
+            SELECT s.id, s.trigger
+            FROM snippets s
+            JOIN snippet_folders sf ON sf.snippet_id = s.id
+            WHERE sf.folder_id = $1 AND s.deleted_at IS NULL
+            ORDER BY s.trigger
+            "#,
+        )
+        .bind(req.source_folder_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        // ── 4. Share each snippet, recording per-item outcomes. ──────────────
+        let mut items: Vec<FolderShareItem> = Vec::with_capacity(snippet_ids.len());
+        let (mut shared, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+
+        for (snippet_id, trigger) in &snippet_ids {
+            let result = self
+                .share_snippet(
+                    requester_id,
+                    ShareRequest {
+                        source_snippet_id: *snippet_id,
+                        recipient: recipient_id.to_string(),
+                        target_workspace_id: req.target_workspace_id,
+                    },
+                )
+                .await;
+
+            match result {
+                Ok(copy) => {
+                    shared += 1;
+                    items.push(FolderShareItem {
+                        trigger: trigger.clone(),
+                        status: "shared".to_string(),
+                        snippet_id: Some(copy.snippet_id),
+                        reason: None,
+                    });
+                }
+                // A trigger already present in the recipient workspace is an
+                // expected "skip", not a hard failure.
+                Err(AppError::TriggerAlreadyExists)
+                | Err(AppError::TriggerPrefixConflict) => {
+                    skipped += 1;
+                    items.push(FolderShareItem {
+                        trigger: trigger.clone(),
+                        status: "skipped".to_string(),
+                        snippet_id: None,
+                        reason: Some("Trigger already exists in the target workspace".to_string()),
+                    });
+                }
+                Err(e) => {
+                    failed += 1;
+                    items.push(FolderShareItem {
+                        trigger: trigger.clone(),
+                        status: "failed".to_string(),
+                        snippet_id: None,
+                        reason: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+
+        Ok(FolderShareResponse {
+            recipient_id,
+            total: snippet_ids.len(),
+            shared,
+            skipped,
+            failed,
+            items,
         })
     }
 

@@ -75,7 +75,7 @@ use crate::sync::handlers::{
 };
 use crate::sync::service::SyncService;
 use crate::sync::session_registry::SessionRegistry;
-use crate::sharing::handlers::share_snippet_handler;
+use crate::sharing::handlers::{share_folder_handler, share_snippet_handler};
 use crate::sharing::service::SharingService;
 use crate::workspace::handlers::{
     create_invite_handler, create_team_handler, get_team_handler, join_via_invite_handler,
@@ -425,6 +425,7 @@ pub fn build_router(state: AppState) -> Router {
     let pool_for_sharing = Arc::new(state.pool.clone());
     let sharing_routes = Router::new()
         .route("/sharing/snippets", post(share_snippet_handler))
+        .route("/sharing/folders", post(share_folder_handler))
         .layer(Extension(sharing_service.clone()))
         .layer(Extension(state.pool.clone()))
         .layer(axum::middleware::from_fn(move |req, next| {
