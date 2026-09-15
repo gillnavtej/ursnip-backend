@@ -1498,8 +1498,14 @@ impl AuthService {
             .await
             .map_err(|_| AppError::InternalError)?;
 
-        // Update the user's password
-        sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
+        // Update the user's password. Also mark the email verified: completing a
+        // reset requires clicking a link delivered to the account's inbox, which
+        // proves control of the email. This independently prevents the lockout
+        // where an unverified account (e.g. an OAuth signup) sets a password via
+        // reset but still cannot log in due to the email_verified guard.
+        sqlx::query(
+            "UPDATE users SET password_hash = $1, email_verified = true, updated_at = NOW() WHERE id = $2",
+        )
             .bind(&new_password_hash)
             .bind(token_row.user_id)
             .execute(&mut *tx)
