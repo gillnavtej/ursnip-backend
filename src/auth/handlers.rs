@@ -17,10 +17,10 @@ use uuid::Uuid;
 use crate::auth::oauth::{OAuthProvider, OAuthService};
 use crate::auth::service::{
     AuthResponse, AuthService, ChangeEmailRequest, ChangePasswordRequest,
-    CreateAdminInviteRequest, ForgotPasswordRequest, LoginRequest, LogoutRequest, ProfileResponse,
-    RefreshRequest, RegisterRequest, RegisterResponse, RegisterViaInviteRequest,
-    ResetPasswordRequest, SessionInfo, UpdateProfileRequest, VerifyEmailChangeRequest,
-    VerifyOtpRequest,
+    CreateAdminInviteRequest, ForgotPasswordRequest, HandoffExchangeRequest, HandoffMintResponse,
+    LoginRequest, LogoutRequest, ProfileResponse, RefreshRequest, RegisterRequest,
+    RegisterResponse, RegisterViaInviteRequest, ResetPasswordRequest, SessionInfo,
+    UpdateProfileRequest, VerifyEmailChangeRequest, VerifyOtpRequest,
 };
 use crate::config::AppConfig;
 use crate::errors::AppError;
@@ -115,6 +115,18 @@ pub async fn refresh_handler(
 ) -> Result<Json<AuthResponse>, AppError> {
     let response = auth_service.refresh_token(body).await?;
     Ok(Json(response))
+}
+
+/// POST /auth/handoff/exchange (public)
+///
+/// Exchange a short-lived handoff code (minted by an authenticated web session)
+/// for a standard token pair. Lets a client without credentials — notably the
+/// browser extension for OAuth-only users — obtain a session.
+pub async fn exchange_handoff_handler(
+    Extension(auth_service): Extension<Arc<AuthService>>,
+    Json(body): Json<HandoffExchangeRequest>,
+) -> Result<Json<AuthResponse>, AppError> {
+    Ok(Json(auth_service.exchange_handoff_code(body).await?))
 }
 
 /// POST /auth/logout
@@ -234,6 +246,18 @@ pub async fn list_sessions_handler(
 ) -> Result<Json<Vec<SessionInfo>>, AppError> {
     let sessions = auth_service.list_sessions(claims.sub).await?;
     Ok(Json(sessions))
+}
+
+/// POST /auth/handoff/mint (authenticated)
+///
+/// Mint a short-lived, single-use handoff code for the authenticated user. The
+/// web app relays this code to the browser extension, which exchanges it via
+/// `/auth/handoff/exchange` for its own token pair.
+pub async fn mint_handoff_handler(
+    Extension(auth_service): Extension<Arc<AuthService>>,
+    Extension(claims): Extension<AccessTokenClaims>,
+) -> Result<Json<HandoffMintResponse>, AppError> {
+    Ok(Json(auth_service.mint_handoff_code(claims.sub).await?))
 }
 
 /// DELETE /auth/sessions/:session_id

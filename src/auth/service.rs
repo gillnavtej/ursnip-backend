@@ -287,6 +287,30 @@ struct OtpUserRow {
     pub email_verified: bool,
 }
 
+/// Response payload for minting a handoff code.
+#[derive(Debug, Serialize)]
+pub struct HandoffMintResponse {
+    /// The plaintext handoff code to relay to the extension.
+    pub code: String,
+    /// Seconds until the code expires.
+    pub expires_in: i64,
+}
+
+/// Request payload for exchanging a handoff code for a token pair.
+#[derive(Debug, Deserialize)]
+pub struct HandoffExchangeRequest {
+    pub code: String,
+    pub client_type: ClientType,
+}
+
+/// Internal row type for handoff code lookup during exchange.
+#[derive(Debug, sqlx::FromRow)]
+struct HandoffCodeRow {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+}
+
 // ─── Brute-force tracking ────────────────────────────────────────────────────
 
 /// In-memory state for tracking failed login attempts per email.
@@ -321,6 +345,10 @@ const OTP_TTL_MINUTES: i64 = 10;
 /// Maximum verification attempts allowed against a single OTP before it is
 /// rejected and a resend is required.
 const OTP_MAX_ATTEMPTS: i32 = 5;
+
+/// Handoff code validity window in minutes. Short by design: the code is meant
+/// to be relayed from the web app to the extension within a minute or two.
+const HANDOFF_TTL_MINUTES: i64 = 3;
 
 /// Minimum number of seconds between OTP resends for a given user.
 const OTP_RESEND_COOLDOWN_SECS: i64 = 30;
@@ -697,6 +725,203 @@ impl AuthService {
                 id: user.id,
                 email: user.email,
                 role: Role::User,
+                referral_code: user.referral_code,
+                workspace_id,
+            },
+        })
+    }
+
+    // ─── Handoff (web → extension session transfer) ──────────────────────────────
+
+    /// Mint a short-lived, single-use handoff code for an authenticated user.
+    ///
+    /// Invalidates any prior unused codes for the user (at most one active code
+    /// at a time), stores only the SHA-256 hash of a fresh random code with a
+    /// short TTL, and returns the plaintext code for the web app to relay to the
+    /// extension. The code is never logged.
+    pub async fn mint_handoff_code(&self, user_id: Uuid) -> Result<HandoffMintResponse, AppError> {
+        let code = generate_handoff_code();
+        let code_hash = hash_token(&code);
+        let expires_at = Utc::now() + Duration::minutes(HANDOFF_TTL_MINUTES);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        // Invalidate any previously issued (unused) codes so only one is active.
+        sqlx::query("UPDATE handoff_codes SET used = true WHERE user_id = $1 AND used = false")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO handoff_codes (user_id, code_hash, expires_at)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&code_hash)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        tx.commit().await.map_err(|_| AppError::InternalError)?;
+
+        tracing::info!(user_id = %user_id, "Handoff code minted");
+
+        Ok(HandoffMintResponse {
+            code,
+            expires_in: HANDOFF_TTL_MINUTES * 60,
+        })
+    }
+
+    /// Exchange a handoff code for a fresh token pair.
+    ///
+    /// Verifies the code is known, unexpired, and unused; consumes it (single
+    /// use) and issues a standard `AuthResponse` for the associated user. The
+    /// access token reflects the user's real role and subscription tier.
+    /// Returns `InvalidOtp` for unknown/used codes and `OtpExpired` for expired
+    /// ones (reusing the generic code-exchange error variants).
+    pub async fn exchange_handoff_code(
+        &self,
+        req: HandoffExchangeRequest,
+    ) -> Result<AuthResponse, AppError> {
+        let code_hash = hash_token(&req.code);
+
+        // Look up the code by hash.
+        let row = sqlx::query_as::<_, HandoffCodeRow>(
+            r#"
+            SELECT id, user_id, expires_at
+            FROM handoff_codes
+            WHERE code_hash = $1 AND used = false
+            "#,
+        )
+        .bind(&code_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let row = match row {
+            Some(r) => r,
+            None => return Err(AppError::InvalidOtp),
+        };
+
+        if row.expires_at < Utc::now() {
+            return Err(AppError::OtpExpired);
+        }
+
+        // Look up the user (must still be active/non-deleted).
+        let user = sqlx::query_as::<_, UserRow>(
+            r#"
+            SELECT id, email, password_hash, role, status, deleted_at, referral_code, must_reset_password, email_verified
+            FROM users
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(row.user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let user = match user {
+            Some(u) => u,
+            None => return Err(AppError::InvalidOtp),
+        };
+
+        // Consume the code and issue a refresh token atomically.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        sqlx::query("UPDATE handoff_codes SET used = true WHERE id = $1")
+            .bind(row.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::InternalError)?;
+
+        // Enforce the same session cap as login.
+        self.enforce_session_limit(user.id, &mut tx).await?;
+
+        let raw_refresh_token = generate_refresh_token();
+        let token_hash = hash_token(&raw_refresh_token);
+        let expires_at = Utc::now() + Duration::days(30);
+
+        sqlx::query(
+            r#"
+            INSERT INTO refresh_tokens (user_id, token_hash, client_type, expires_at)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(user.id)
+        .bind(&token_hash)
+        .bind(client_type_to_str(&req.client_type))
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        tx.commit().await.map_err(|_| AppError::InternalError)?;
+
+        // Look up real subscription tier + individual workspace for the claims.
+        let subscription_tier: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT s.tier
+            FROM subscriptions s
+            JOIN workspaces w ON w.id = s.workspace_id
+            WHERE w.owner_id = $1 AND w.type = 'individual'
+            LIMIT 1
+            "#,
+        )
+        .bind(user.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let tier = match subscription_tier.as_deref() {
+            Some("pro") => Tier::Pro,
+            Some("teams") => Tier::Teams,
+            _ => Tier::Free,
+        };
+
+        let workspace_id: Uuid = sqlx::query_scalar(
+            r#"
+            SELECT id FROM workspaces WHERE owner_id = $1 AND type = 'individual' LIMIT 1
+            "#,
+        )
+        .bind(user.id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| AppError::InternalError)?;
+
+        let claims = AccessTokenClaims {
+            sub: user.id,
+            client_type: req.client_type,
+            role: user.role.clone(),
+            permissions: default_user_permissions(),
+            subscription_tier: tier,
+            status: user.status.clone(),
+            must_reset_password: user.must_reset_password,
+            exp: 0, // will be set by encode_access_token
+        };
+
+        let access_token = encode_access_token(claims, &self.config.jwt_secret);
+
+        tracing::info!(user_id = %user.id, "Handoff code exchanged for token pair");
+
+        Ok(AuthResponse {
+            access_token,
+            refresh_token: raw_refresh_token,
+            user: UserInfo {
+                id: user.id,
+                email: user.email,
+                role: user.role,
                 referral_code: user.referral_code,
                 workspace_id,
             },
@@ -2420,6 +2645,13 @@ pub(crate) fn generate_random_code(len: usize) -> String {
 fn generate_otp_code() -> String {
     let n: u32 = rand::thread_rng().gen_range(0..1_000_000);
     format!("{:06}", n)
+}
+
+/// Generate a handoff code: a hyphenated pair of 4-char alphanumeric groups
+/// (e.g. "A7F2-9KQ3"), long enough to be unguessable within its short TTL but
+/// short enough to type/paste. Uses the shared alphanumeric generator.
+fn generate_handoff_code() -> String {
+    format!("{}-{}", generate_random_code(4), generate_random_code(4))
 }
 
 /// Convert ClientType enum to its database string representation.
