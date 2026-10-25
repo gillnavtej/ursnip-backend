@@ -25,8 +25,13 @@ use crate::AppError;
 
 // ─── Rate Limit Configuration ──────────────────────────────────────────────────
 
-/// IP-based rate limit: 100 requests per minute.
-const IP_MAX_REQUESTS: usize = 100;
+/// IP-based rate limit: 100 requests per minute (default).
+///
+/// Overridable at startup via the `RATE_LIMIT_IP_MAX_REQUESTS` environment
+/// variable. This is primarily intended for local E2E test runs (where a single
+/// loopback IP drives the whole browser session) and self-hosted deployments
+/// behind a shared egress IP. Production keeps the 100/min default when unset.
+const IP_MAX_REQUESTS_DEFAULT: usize = 100;
 const IP_WINDOW: Duration = Duration::from_secs(60);
 
 /// Authenticated user rate limit: 500 requests per minute.
@@ -134,6 +139,8 @@ pub struct RateLimiter {
     forgot_password_limiter: Arc<DashMap<String, SlidingWindow>>,
     /// Parsed trusted proxy CIDRs for IP resolution.
     trusted_proxy_cidrs: Arc<Vec<IpNet>>,
+    /// Per-IP max requests per window (default 100, env-overridable).
+    ip_max_requests: usize,
 }
 
 impl RateLimiter {
@@ -151,6 +158,21 @@ impl RateLimiter {
             })
             .collect();
 
+        let ip_max_requests = std::env::var("RATE_LIMIT_IP_MAX_REQUESTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(IP_MAX_REQUESTS_DEFAULT);
+
+        Self::with_ip_max(cidrs, ip_max_requests)
+    }
+
+    /// Construct a `RateLimiter` with an explicit per-IP cap (no env lookup).
+    ///
+    /// Used internally by `new` after resolving the env override, and by unit
+    /// tests so their assertions stay deterministic regardless of the ambient
+    /// `RATE_LIMIT_IP_MAX_REQUESTS` value.
+    fn with_ip_max(cidrs: Vec<IpNet>, ip_max_requests: usize) -> Self {
         Self {
             ip_limiter: Arc::new(DashMap::new()),
             user_limiter: Arc::new(DashMap::new()),
@@ -159,6 +181,7 @@ impl RateLimiter {
             sync_read_limiter: Arc::new(DashMap::new()),
             forgot_password_limiter: Arc::new(DashMap::new()),
             trusted_proxy_cidrs: Arc::new(cidrs),
+            ip_max_requests,
         }
     }
 
@@ -167,7 +190,7 @@ impl RateLimiter {
     /// Returns `Ok(())` if allowed, or `Err(AppError::RateLimitExceeded)` with
     /// the appropriate `retry_after_secs`.
     pub fn check_ip(&self, ip: &str) -> Result<(), AppError> {
-        self.check_limit(&self.ip_limiter, ip, IP_WINDOW, IP_MAX_REQUESTS)
+        self.check_limit(&self.ip_limiter, ip, IP_WINDOW, self.ip_max_requests)
     }
 
     /// Check user-based rate limit (500 req/min).
@@ -387,16 +410,16 @@ mod tests {
 
     #[test]
     fn rate_limiter_check_ip_allows_within_limit() {
-        let rl = RateLimiter::new(&[]);
-        for _ in 0..IP_MAX_REQUESTS {
+        let rl = RateLimiter::with_ip_max(vec![], IP_MAX_REQUESTS_DEFAULT);
+        for _ in 0..IP_MAX_REQUESTS_DEFAULT {
             assert!(rl.check_ip("192.168.1.1").is_ok());
         }
     }
 
     #[test]
     fn rate_limiter_check_ip_denies_over_limit() {
-        let rl = RateLimiter::new(&[]);
-        for _ in 0..IP_MAX_REQUESTS {
+        let rl = RateLimiter::with_ip_max(vec![], IP_MAX_REQUESTS_DEFAULT);
+        for _ in 0..IP_MAX_REQUESTS_DEFAULT {
             rl.check_ip("10.0.0.1").unwrap();
         }
         let result = rl.check_ip("10.0.0.1");
@@ -405,8 +428,8 @@ mod tests {
 
     #[test]
     fn rate_limiter_different_keys_independent() {
-        let rl = RateLimiter::new(&[]);
-        for _ in 0..IP_MAX_REQUESTS {
+        let rl = RateLimiter::with_ip_max(vec![], IP_MAX_REQUESTS_DEFAULT);
+        for _ in 0..IP_MAX_REQUESTS_DEFAULT {
             rl.check_ip("10.0.0.1").unwrap();
         }
         // Different IP should still be allowed

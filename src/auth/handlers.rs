@@ -295,16 +295,26 @@ pub async fn oauth_callback_handler(
     let code = params.code.as_deref().unwrap_or("");
     let frontend_url = &config.frontend_url;
 
-    // Handle error from provider — redirect to frontend with error param
-    if let Some(ref error) = params.error {
-        if client_type == ClientType::Web {
-            let redirect_url = format!(
-                "{}/callback?error={}",
-                frontend_url,
-                urlencoding::encode(error)
-            );
-            return Ok(Redirect::temporary(&redirect_url).into_response());
+    // Build the client-appropriate callback URL carrying an `error` param, so a
+    // cancelled/denied authorization lands the user back on a page that knows how
+    // to recover (the frontend `/callback` route redirects to `/sign-in`), rather
+    // than on a blank page. Web → the configured frontend origin; Native → the
+    // app's deep link so the Tauri app can catch it.
+    let error_redirect = |error: &str| -> String {
+        match client_type {
+            ClientType::Native => {
+                format!("ursnip://oauth/callback?error={}", urlencoding::encode(error))
+            }
+            ClientType::Web => {
+                format!("{}/callback?error={}", frontend_url, urlencoding::encode(error))
+            }
         }
+    };
+
+    // Handle error from provider (e.g. the user cancelled) — redirect back with
+    // the error param for BOTH client types.
+    if let Some(ref error) = params.error {
+        return Ok(Redirect::temporary(&error_redirect(error)).into_response());
     }
 
     let response = oauth_service
@@ -318,40 +328,45 @@ pub async fn oauth_callback_handler(
         .await;
 
     match (response, &client_type) {
-        (Ok(auth_response), ClientType::Web) => {
-            // Redirect to frontend callback page with tokens in URL params
-            tracing::info!(email = %auth_response.user.email, "OAuth success, redirecting to frontend");
-            let user_json = serde_json::to_string(&auth_response.user)
-                .unwrap_or_default();
+        (Ok(auth_response), _) => {
+            // Success: redirect back to the client's callback with tokens in the
+            // query. Native OAuth runs in the system browser (so the provider can
+            // reach the custom scheme), so BOTH clients redirect — Web to the
+            // frontend `/callback`, Native to the `ursnip://oauth/callback` deep
+            // link the app catches. Same param shape either way, so the frontend
+            // `/callback` handler is reused for both.
+            tracing::info!(
+                email = %auth_response.user.email,
+                ?client_type,
+                "OAuth success, redirecting to callback"
+            );
+            let user_json = serde_json::to_string(&auth_response.user).unwrap_or_default();
+            let base = match client_type {
+                ClientType::Native => "ursnip://oauth/callback".to_string(),
+                ClientType::Web => format!("{}/callback", frontend_url),
+            };
             let redirect_url = format!(
-                "{}/callback?access_token={}&refresh_token={}&user={}",
-                frontend_url,
+                "{}?access_token={}&refresh_token={}&user={}",
+                base,
                 urlencoding::encode(&auth_response.access_token),
                 urlencoding::encode(&auth_response.refresh_token),
                 urlencoding::encode(&user_json),
             );
             Ok(Redirect::temporary(&redirect_url).into_response())
         }
-        (Ok(auth_response), ClientType::Native) => {
-            // Native clients get JSON response
-            Ok(Json(auth_response).into_response())
-        }
-        (Err(ref e), ClientType::Web) => {
-            // Redirect to frontend with error
-            tracing::error!(error = ?e, "OAuth callback failed, redirecting with error");
+        (Err(ref e), _) => {
+            // Redirect back with an error code for BOTH client types so the user
+            // never lands on a blank page (Web → frontend /callback, Native →
+            // the app deep link). Previously only Web redirected and Native
+            // returned a raw 401/JSON, which showed as a blank page in the app.
+            tracing::error!(error = ?e, ?client_type, "OAuth callback failed, redirecting with error");
             let error_code = match &e {
                 AppError::OAuthAuthorizationDenied => "OAUTH_AUTHORIZATION_DENIED",
                 AppError::AccountLinkingConflict => "ACCOUNT_LINKING_CONFLICT",
                 _ => "OAUTH_ERROR",
             };
-            let redirect_url = format!(
-                "{}/callback?error={}",
-                frontend_url,
-                urlencoding::encode(error_code)
-            );
-            Ok(Redirect::temporary(&redirect_url).into_response())
+            Ok(Redirect::temporary(&error_redirect(error_code)).into_response())
         }
-        (Err(e), _) => Err(e),
     }
 }
 

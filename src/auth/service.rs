@@ -1227,7 +1227,7 @@ impl AuthService {
         // Look up user details
         let user = sqlx::query_as::<_, UserRow>(
             r#"
-            SELECT id, email, password_hash, role, status, deleted_at, referral_code, must_reset_password
+            SELECT id, email, password_hash, role, status, deleted_at, referral_code, must_reset_password, email_verified
             FROM users
             WHERE id = $1
             "#,

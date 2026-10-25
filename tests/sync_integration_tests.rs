@@ -28,7 +28,9 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use ursnip_backend::middleware::auth_extractor::AccessTokenClaims;
+use ursnip_backend::middleware::workspace_context::workspace_context_guard;
 use ursnip_backend::models::common::{ClientType, Role, Tier};
+use ursnip_backend::notifications::service::NotificationService;
 use ursnip_backend::sync::handlers::{
     batch_operations_handler, create_folder_handler, create_snippet_handler,
     delete_folder_handler, delete_snippet_handler, get_deltas_handler,
@@ -46,8 +48,10 @@ const TEST_JWT_SECRET: &str = "test-jwt-secret-for-sync-integration-tests";
 /// Build a test Axum router with sync routes, injecting the SyncService and SessionRegistry.
 /// Authentication is simulated by injecting claims directly via middleware.
 fn build_test_router(pool: PgPool) -> Router {
-    let sync_service = Arc::new(SyncService::new(pool));
+    let sync_service = Arc::new(SyncService::new(pool.clone()));
     let session_registry = Arc::new(SessionRegistry::new(10_000));
+    let notif_service = Arc::new(NotificationService::new(pool.clone()));
+    let guard_pool = Arc::new(pool);
 
     Router::new()
         .route("/sync/snippets", post(create_snippet_handler))
@@ -59,8 +63,19 @@ fn build_test_router(pool: PgPool) -> Router {
         .route("/sync/folders/:id", delete(delete_folder_handler))
         .route("/sync/snapshot", get(get_snapshot_handler))
         .route("/sync/deltas", get(get_deltas_handler))
+        // Drive requests through the REAL workspace_context_guard (same as the
+        // production router). It resolves the workspace from the `X-Workspace-ID`
+        // header, verifies membership in `workspace_members`, and injects the
+        // `WorkspaceContext` the handlers require — so membership and
+        // nonexistent/other-workspace behavior is exercised for real. The request
+        // helpers below attach `X-Workspace-ID`.
+        .layer(axum::middleware::from_fn(move |req, next| {
+            let p = guard_pool.clone();
+            async move { workspace_context_guard(req, next, p).await }
+        }))
         .layer(Extension(sync_service))
         .layer(Extension(session_registry))
+        .layer(Extension(notif_service))
 }
 
 /// Create default test claims for a native user.
@@ -77,12 +92,30 @@ fn test_claims(user_id: Uuid) -> AccessTokenClaims {
     }
 }
 
-/// Build a JSON POST request with claims injected into extensions.
+/// The `X-Workspace-ID` header the `workspace_context_guard` reads to resolve
+/// the workspace. Kept identical to the production header name.
+const WORKSPACE_ID_HEADER: &str = "x-workspace-id";
+
+/// Set `X-Workspace-ID` on a request builder from a body/query `workspace_id`
+/// when present, so the real guard can resolve + authorize the workspace.
+fn with_workspace_header(
+    builder: axum::http::request::Builder,
+    workspace_id: Option<&str>,
+) -> axum::http::request::Builder {
+    match workspace_id {
+        Some(id) => builder.header(WORKSPACE_ID_HEADER, id),
+        None => builder,
+    }
+}
+
+/// Build a JSON POST request with claims + `X-Workspace-ID` (from the body).
 fn post_json(uri: &str, body: Value, claims: &AccessTokenClaims) -> Request<Body> {
-    let mut req = Request::builder()
+    let ws = body.get("workspace_id").and_then(|v| v.as_str());
+    let builder = Request::builder()
         .method("POST")
         .uri(uri)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    let mut req = with_workspace_header(builder, ws)
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
     req.extensions_mut().insert(claims.clone());
@@ -90,33 +123,53 @@ fn post_json(uri: &str, body: Value, claims: &AccessTokenClaims) -> Request<Body
 }
 
 /// Build a JSON PATCH request with claims injected into extensions.
-fn patch_json(uri: &str, body: Value, claims: &AccessTokenClaims) -> Request<Body> {
-    let mut req = Request::builder()
+///
+/// PATCH bodies do not carry `workspace_id` (the resource is addressed by path
+/// id), so the workspace must be provided explicitly for the guard's header.
+fn patch_json(
+    uri: &str,
+    body: Value,
+    claims: &AccessTokenClaims,
+    workspace_id: Uuid,
+) -> Request<Body> {
+    let ws = workspace_id.to_string();
+    let builder = Request::builder()
         .method("PATCH")
         .uri(uri)
         .header("content-type", "application/json")
+        .header(WORKSPACE_ID_HEADER, &ws);
+    let mut req = builder
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
     req.extensions_mut().insert(claims.clone());
     req
 }
 
-/// Build a DELETE request with claims injected into extensions.
-fn delete_req(uri: &str, claims: &AccessTokenClaims) -> Request<Body> {
+/// Build a DELETE request with claims + explicit `X-Workspace-ID` (the resource
+/// is addressed by path id and carries no workspace_id otherwise).
+fn delete_req(uri: &str, claims: &AccessTokenClaims, workspace_id: Uuid) -> Request<Body> {
+    let ws = workspace_id.to_string();
     let mut req = Request::builder()
         .method("DELETE")
         .uri(uri)
+        .header(WORKSPACE_ID_HEADER, &ws)
         .body(Body::empty())
         .unwrap();
     req.extensions_mut().insert(claims.clone());
     req
 }
 
-/// Build a GET request with claims injected into extensions.
+/// Build a GET request with claims + `X-Workspace-ID` (parsed from the query's
+/// `workspace_id`, matching how web clients call these read endpoints).
 fn get_req(uri: &str, claims: &AccessTokenClaims) -> Request<Body> {
-    let mut req = Request::builder()
-        .method("GET")
-        .uri(uri)
+    let ws = uri
+        .split_once('?')
+        .and_then(|(_, q)| {
+            q.split('&').find_map(|kv| kv.strip_prefix("workspace_id="))
+        })
+        .map(|s| s.to_string());
+    let builder = Request::builder().method("GET").uri(uri);
+    let mut req = with_workspace_header(builder, ws.as_deref())
         .body(Body::empty())
         .unwrap();
     req.extensions_mut().insert(claims.clone());
@@ -203,6 +256,17 @@ async fn seed_user_and_workspace(pool: &PgPool) -> (Uuid, Uuid) {
     .expect("Failed to create test subscription");
 
     (user_id, workspace_id)
+}
+
+/// Upgrade a workspace's subscription to the Pro tier. Batch operations are
+/// gated behind Pro/Teams (`batch_operations` returns `SubscriptionRequired` on
+/// Free), so batch happy-path tests must run against a paid workspace.
+async fn upgrade_to_pro(pool: &PgPool, workspace_id: Uuid) {
+    sqlx::query("UPDATE subscriptions SET tier = 'pro' WHERE workspace_id = $1")
+        .bind(workspace_id)
+        .execute(pool)
+        .await
+        .expect("Failed to upgrade workspace to pro");
 }
 
 /// Clean up test data after each test to avoid polluting next tests.
@@ -297,7 +361,7 @@ async fn test_snippet_update_increments_version() {
         "content": "Hello updated"
     });
     let uri = format!("/sync/snippets/{}", snippet_id);
-    let resp = app.oneshot(patch_json(&uri, update_body, &claims)).await.unwrap();
+    let resp = app.oneshot(patch_json(&uri, update_body, &claims, workspace_id)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let updated = body_json(resp).await;
@@ -328,7 +392,7 @@ async fn test_snippet_delete_returns_204() {
 
     // Delete
     let uri = format!("/sync/snippets/{}", snippet_id);
-    let resp = app.oneshot(delete_req(&uri, &claims)).await.unwrap();
+    let resp = app.oneshot(delete_req(&uri, &claims, workspace_id)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     cleanup(&pool, user_id, workspace_id).await;
@@ -378,7 +442,7 @@ async fn test_folder_update_increments_version() {
     // Update folder
     let update_body = json!({ "name": "Renamed" });
     let uri = format!("/sync/folders/{}", folder_id);
-    let resp = app.oneshot(patch_json(&uri, update_body, &claims)).await.unwrap();
+    let resp = app.oneshot(patch_json(&uri, update_body, &claims, workspace_id)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let updated = body_json(resp).await;
@@ -404,7 +468,7 @@ async fn test_folder_delete_returns_204() {
 
     // Delete folder
     let uri = format!("/sync/folders/{}", folder_id);
-    let resp = app.oneshot(delete_req(&uri, &claims)).await.unwrap();
+    let resp = app.oneshot(delete_req(&uri, &claims, workspace_id)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     cleanup(&pool, user_id, workspace_id).await;
@@ -418,6 +482,7 @@ async fn test_folder_delete_returns_204() {
 async fn test_batch_create_multiple_snippets_success() {
     let pool = setup_test_db().await;
     let (user_id, workspace_id) = seed_user_and_workspace(&pool).await;
+    upgrade_to_pro(&pool, workspace_id).await; // batch ops are Pro/Teams-only
     let app = build_test_router(pool.clone());
     let claims = test_claims(user_id);
 
@@ -460,6 +525,7 @@ async fn test_batch_create_multiple_snippets_success() {
 async fn test_batch_rollback_on_duplicate_trigger() {
     let pool = setup_test_db().await;
     let (user_id, workspace_id) = seed_user_and_workspace(&pool).await;
+    upgrade_to_pro(&pool, workspace_id).await; // batch ops are Pro/Teams-only
     let app = build_test_router(pool.clone());
     let claims = test_claims(user_id);
 
@@ -676,13 +742,23 @@ async fn test_snapshot_excludes_deleted_snippets() {
     let snippet_id = created["id"].as_str().unwrap();
 
     let uri = format!("/sync/snippets/{}", snippet_id);
-    app.clone().oneshot(delete_req(&uri, &claims)).await.unwrap();
+    app.clone().oneshot(delete_req(&uri, &claims, workspace_id)).await.unwrap();
 
-    // Snapshot should show 0 snippets
+    // The snapshot carries the soft-deleted snippet as a TOMBSTONE (deleted_at
+    // set) rather than omitting it — clients filter `deleted_at === null` locally
+    // (see ursnip-app `exportWorkspaceSnapshot`). So the row is present but marked
+    // deleted, and the active count (after the client-side filter) is 0.
     let snap_uri = format!("/sync/snapshot?workspace_id={}", workspace_id);
     let resp = app.oneshot(get_req(&snap_uri, &claims)).await.unwrap();
     let json = body_json(resp).await;
-    assert_eq!(json["snippets"].as_array().unwrap().len(), 0);
+    let snippets = json["snippets"].as_array().unwrap();
+    assert_eq!(snippets.len(), 1, "tombstone is present in the snapshot");
+    assert!(
+        !snippets[0]["deleted_at"].is_null(),
+        "the returned snippet is a tombstone (deleted_at set)"
+    );
+    let active = snippets.iter().filter(|s| s["deleted_at"].is_null()).count();
+    assert_eq!(active, 0, "no active snippets remain after the client-side filter");
     // Version should be 2 (create + delete)
     assert_eq!(json["version"], 2);
 
@@ -737,7 +813,7 @@ async fn test_trigger_reuse_after_soft_delete() {
 
     // Soft-delete it
     let uri = format!("/sync/snippets/{}", snippet_id);
-    app.clone().oneshot(delete_req(&uri, &claims)).await.unwrap();
+    app.clone().oneshot(delete_req(&uri, &claims, workspace_id)).await.unwrap();
 
     // Now reuse the same trigger — should succeed
     let reuse_body = json!({
@@ -961,10 +1037,12 @@ async fn test_free_tier_snippet_limit_enforced() {
     let claims = test_claims(user_id);
 
     // Create 10 snippets (free tier max)
+    // Zero-pad so no trigger is a prefix of another (`limit_1` would be a prefix
+    // of `limit_10`, which the prefix-conflict rule rejects with 409).
     for i in 1..=10 {
         let body = json!({
             "workspace_id": workspace_id,
-            "trigger": format!("limit_{}", i),
+            "trigger": format!("limit_{:02}", i),
             "content": "Short",
             "snippet_type": "text"
         });
@@ -996,8 +1074,8 @@ async fn test_free_tier_content_length_limit() {
     let app = build_test_router(pool.clone());
     let claims = test_claims(user_id);
 
-    // Content with 2001 chars should be rejected on free tier
-    let long_content = "x".repeat(2001);
+    // Content at/over the free-tier limit (10000 UTF-16 units) is rejected.
+    let long_content = "x".repeat(10001);
     let body = json!({
         "workspace_id": workspace_id,
         "trigger": "toolong",
@@ -1044,6 +1122,7 @@ async fn test_free_tier_folder_limit_enforced() {
 async fn test_batch_with_update_and_delete() {
     let pool = setup_test_db().await;
     let (user_id, workspace_id) = seed_user_and_workspace(&pool).await;
+    upgrade_to_pro(&pool, workspace_id).await; // batch ops are Pro/Teams-only
     let app = build_test_router(pool.clone());
     let claims = test_claims(user_id);
 
@@ -1124,12 +1203,12 @@ async fn test_version_monotonically_increases_across_operations() {
     // Update snippet (v3)
     let body = json!({ "content": "v3" });
     let uri = format!("/sync/snippets/{}", snippet_id);
-    let resp = app.clone().oneshot(patch_json(&uri, body, &claims)).await.unwrap();
+    let resp = app.clone().oneshot(patch_json(&uri, body, &claims, workspace_id)).await.unwrap();
     let json = body_json(resp).await;
     assert_eq!(json["version"], 3);
 
     // Delete snippet (v4)
-    let resp = app.oneshot(delete_req(&uri, &claims)).await.unwrap();
+    let resp = app.oneshot(delete_req(&uri, &claims, workspace_id)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     // Verify via deltas that versions are 1,2,3,4
@@ -1238,12 +1317,17 @@ async fn test_ws_connection_and_delta_push() {
     cleanup(&pool, user_id, workspace_id).await;
 }
 
-// ─── Test: Workspace not found returns 404 ──────────────────────────────────────
+// ─── Test: Inaccessible workspace is rejected by the guard ──────────────────────
 // Requirements: 2.41
+//
+// A workspace the caller is not a member of (including a nonexistent one) is
+// rejected by `workspace_context_guard` with 403 NOT_A_WORKSPACE_MEMBER — the
+// guard intentionally does not distinguish "missing" from "not yours" so it
+// can't be used to probe which workspace IDs exist.
 
 #[tokio::test]
 #[ignore]
-async fn test_nonexistent_workspace_returns_404() {
+async fn test_nonexistent_workspace_returns_403() {
     let pool = setup_test_db().await;
     let (user_id, workspace_id) = seed_user_and_workspace(&pool).await;
     let app = build_test_router(pool.clone());
@@ -1257,7 +1341,7 @@ async fn test_nonexistent_workspace_returns_404() {
         "snippet_type": "text"
     });
     let resp = app.oneshot(post_json("/sync/snippets", body, &claims)).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
     cleanup(&pool, user_id, workspace_id).await;
 }
