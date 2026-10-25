@@ -61,6 +61,7 @@ use crate::auth::handlers::{
     delete_account_handler, list_sessions_handler, revoke_session_handler,
     oauth_authorize_handler, oauth_callback_handler, register_via_invite_handler,
     get_my_referrals_handler, verify_otp_handler, resend_otp_handler,
+    mint_handoff_handler, exchange_handoff_handler,
 };
 use crate::auth::oauth::OAuthService;
 use crate::auth::service::AuthService;
@@ -164,6 +165,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/resend-otp", post(resend_otp_handler))
         .route("/auth/login", post(login_handler))
         .route("/auth/refresh", post(refresh_handler))
+        .route("/auth/handoff/exchange", post(exchange_handoff_handler))
         .route("/auth/forgot-password", post(forgot_password_handler))
         .route("/auth/reset-password", post(reset_password_handler))
         .route("/auth/verify-email-change", get(verify_email_change_handler))
@@ -182,6 +184,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/change-password", post(change_password_handler))
         .route("/auth/account", delete(delete_account_handler))
         .route("/auth/sessions", get(list_sessions_handler))
+        .route("/auth/handoff/mint", post(mint_handoff_handler))
         .route("/auth/sessions/:session_id", delete(revoke_session_handler))
         .route("/auth/referrals", get(get_my_referrals_handler))
         .layer(Extension(auth_service.clone()))

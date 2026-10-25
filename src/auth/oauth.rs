@@ -273,10 +273,16 @@ impl OAuthService {
                 // New user — create account (same as register flow)
                 let referral_code = self.generate_unique_referral_code_tx(&mut tx).await?;
 
+                // email_verified = true: the OAuth provider only returns an email
+                // after asserting it is verified (enforced above where we require
+                // `email_verified == Some(true)` from the provider), so the account
+                // is created verified. Omitting this would fall to the column
+                // default (FALSE, from migration 0011) and lock the user out of
+                // password login even though their email is genuinely verified.
                 let new_user_id: Uuid = sqlx::query_scalar(
                     r#"
-                    INSERT INTO users (email, password_hash, role, status, referral_code)
-                    VALUES ($1, '', 'user', 'active', $2)
+                    INSERT INTO users (email, password_hash, role, status, referral_code, email_verified)
+                    VALUES ($1, '', 'user', 'active', $2, true)
                     RETURNING id
                     "#,
                 )
